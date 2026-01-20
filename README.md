@@ -1,4 +1,4 @@
-# ChatGPT Markdown Exporter (Chrome Extension)
+# ChatGPT Conversation Exporter (Chrome Extension)
 
 ## Load unpacked
 

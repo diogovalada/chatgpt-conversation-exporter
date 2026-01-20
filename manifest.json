@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Markdown Exporter",
+  "name": "ChatGPT Conversation Exporter",
   "version": "0.2.0",
   "description": "Export ChatGPT conversations to Markdown (.md) or a zip with images.",
   "icons": {
@@ -10,7 +10,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "Download ChatGPT as .md",
+    "default_title": "Export ChatGPT conversation",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
