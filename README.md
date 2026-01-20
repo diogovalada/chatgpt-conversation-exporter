@@ -17,3 +17,7 @@
 ## Sidebar menu integration (experimental)
 
 When you open the 3-dots menu for a conversation in the left sidebar, the extension injects a **Download** option under **Share**.
+
+## Privacy
+
+See `PRIVACY.md`.
