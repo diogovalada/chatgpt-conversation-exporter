@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Markdown Downloader",
+  "version": "0.1.0",
+  "description": "Download the current ChatGPT conversation as a Markdown file.",
+  "action": {
+    "default_title": "Download ChatGPT as .md",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["activeTab", "downloads", "storage"],
+  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
+

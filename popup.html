@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatGPT Markdown Downloader</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <div class="title">
+        <div class="app">ChatGPT → Markdown</div>
+        <div class="status" id="status">Checking page…</div>
+      </div>
+
+      <div class="row">
+        <label class="checkbox">
+          <input type="checkbox" id="downloadImages" />
+          Download images (beta)
+        </label>
+      </div>
+      <div class="hint" id="imagesHint">
+        Images download may fail for some URLs. If it does, the markdown will still contain image links.
+      </div>
+
+      <div class="buttons">
+        <button id="saveDownloads" class="primary" disabled>Save to Downloads</button>
+        <button id="saveAs" disabled>Save As…</button>
+      </div>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
+
