@@ -74,24 +74,14 @@ function isLikelyContentImage(imgEl) {
 }
 
 function makeImageFilename(index, url) {
-  const ext = (() => {
-    try {
-      const u = new URL(url);
-      const pathname = u.pathname || "";
-      const match = pathname.match(/\.([a-zA-Z0-9]{1,5})$/);
-      if (!match) return null;
-      return match[1].toLowerCase();
-    } catch {
-      return null;
-    }
-  })();
-
-  const safeExt = ext && ["png", "jpg", "jpeg", "webp", "gif"].includes(ext) ? ext : "png";
   const n = String(index).padStart(3, "0");
-  return `image-${n}.${safeExt}`;
+  // Intentionally omit extension; background determines correct extension when packaging.
+  return `image-${n}`;
 }
 
 function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }) {
+  const linkDest = (raw) => `<${encodeURI(String(raw ?? ""))}>`;
+
   function convertChildren(el, ctx) {
     let out = "";
     for (const child of Array.from(el.childNodes)) {
@@ -225,7 +215,7 @@ function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }
       const href = el.getAttribute("href") || "";
       const text = convertChildren(el, { ...ctx, inInline: true }).trim() || href;
       if (!href) return text;
-      return `[${text}](${href})`;
+      return `[${text}](${linkDest(href)})`;
     }
 
     if (tag === "IMG") {
@@ -238,10 +228,10 @@ function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }
         const idx = imageCollector.length + 1;
         const name = makeImageFilename(idx, url);
         imageCollector.push({ url, name, alt });
-        return `![${alt}](${imageFolder}/${name})`;
+        return `![${alt}](${linkDest(`${imageFolder}/${name}`)})`;
       }
 
-      return `![${alt}](${url})`;
+      return `![${alt}](${linkDest(url)})`;
     }
 
     if (tag === "UL" || tag === "OL") {
@@ -396,6 +386,7 @@ function extractConversation({ downloadImages }) {
   const images = downloadImages
     ? imageCollector.map((img, idx) => ({
         url: img.url,
+        key: img.name,
         filename: `${imageFolder}/${img.name}`,
         alt: img.alt,
         index: idx + 1

@@ -12,5 +12,4 @@
 - Open a ChatGPT conversation on `chatgpt.com` (or `chat.openai.com`)
 - Click the extension icon
 - Choose **Save to Downloads** or **Save As…**
-- Optional: enable **Download images (beta)** to download images into a `*-assets/` folder next to the markdown file (best-effort)
-
+- Optional: enable **Download images** to download a single `.zip` that contains the `.md` and a `*-assets/` folder

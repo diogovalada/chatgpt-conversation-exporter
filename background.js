@@ -1,3 +1,5 @@
+import { strToU8, zipSync } from "./vendor/fflate.browser.esm.js";
+
 function sanitizeFilenamePart(input) {
   const trimmed = String(input ?? "").trim();
   const noControl = trimmed.replace(/[\u0000-\u001f\u007f]/g, "");
@@ -8,18 +10,6 @@ function sanitizeFilenamePart(input) {
 function mdFilenameForTitle(title) {
   const base = sanitizeFilenamePart(title);
   return `${base}.md`;
-}
-
-function fileExtFromUrl(url) {
-  try {
-    const u = new URL(url);
-    const pathname = u.pathname || "";
-    const match = pathname.match(/\.([a-zA-Z0-9]{1,5})$/);
-    if (!match) return null;
-    return match[1].toLowerCase();
-  } catch {
-    return null;
-  }
 }
 
 function dataUrlForMarkdown(markdown) {
@@ -33,6 +23,72 @@ async function getActiveTabId() {
 
 async function extractFromTab(tabId, options) {
   return chrome.tabs.sendMessage(tabId, { type: "EXTRACT_CONVERSATION", options });
+}
+
+function extFromContentType(contentType) {
+  const ct = String(contentType ?? "").toLowerCase();
+  if (ct.includes("image/jpeg")) return "jpg";
+  if (ct.includes("image/png")) return "png";
+  if (ct.includes("image/webp")) return "webp";
+  if (ct.includes("image/gif")) return "gif";
+  if (ct.includes("image/svg+xml")) return "svg";
+  return "bin";
+}
+
+async function fetchAsUint8(url) {
+  const res = await fetch(url, { credentials: "omit" });
+  if (!res.ok) throw new Error(`Failed to fetch ${url} (${res.status})`);
+  const ct = res.headers.get("content-type") || "";
+  const buf = new Uint8Array(await res.arrayBuffer());
+  return { buf, contentType: ct };
+}
+
+function linkDest(raw) {
+  return `<${encodeURI(String(raw ?? ""))}>`;
+}
+
+async function downloadZipBundle({ title, mdFilename, markdown, images, saveAs }) {
+  const safeTitle = sanitizeFilenamePart(title);
+  const zipName = `${safeTitle}.zip`;
+
+  const imageFolder = `${safeTitle}-assets`;
+
+  let patchedMarkdown = markdown;
+  const files = {};
+  files[mdFilename] = strToU8(patchedMarkdown);
+
+  for (const img of images) {
+    if (!img?.url || !img?.key) continue;
+
+    const { buf, contentType } = await fetchAsUint8(img.url);
+    const ext = extFromContentType(contentType);
+    const filename = `${imageFolder}/${img.key}.${ext}`;
+
+    // Patch markdown occurrences of the placeholder (no extension).
+    patchedMarkdown = patchedMarkdown
+      .replaceAll(linkDest(`${imageFolder}/${img.key}`), linkDest(`${imageFolder}/${img.key}.${ext}`))
+      .replaceAll(`${imageFolder}/${img.key}`, `${imageFolder}/${img.key}.${ext}`);
+
+    files[filename] = buf;
+  }
+
+  // Ensure markdown file in zip is patched after image extensions are known.
+  files[mdFilename] = strToU8(patchedMarkdown);
+
+  const zipped = zipSync(files, { level: 6 });
+  const blob = new Blob([zipped], { type: "application/zip" });
+  const url = URL.createObjectURL(blob);
+
+  try {
+    await chrome.downloads.download({
+      url,
+      filename: zipName,
+      saveAs: Boolean(saveAs)
+    });
+  } finally {
+    // Give Chrome a moment to start the download before releasing.
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -65,28 +121,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const filename = extraction.filename ?? mdFilenameForTitle(title);
     const markdown = extraction.markdown ?? "";
 
-    const mdUrl = dataUrlForMarkdown(markdown);
-    await chrome.downloads.download({
-      url: mdUrl,
-      filename,
-      saveAs: Boolean(message.saveAs)
-    });
-
-    if (Array.isArray(extraction.images) && extraction.images.length > 0) {
-      // Best-effort: download images into a subfolder next to the .md, when possible.
-      // Note: if the user uses Save As… for the .md, these may still land in Downloads.
-      for (let i = 0; i < extraction.images.length; i++) {
-        const img = extraction.images[i];
-        if (!img?.url || !img?.filename) continue;
-
-        await chrome.downloads.download({
-          url: img.url,
-          filename: img.filename,
-          saveAs: false,
-          conflictAction: "uniquify"
-        });
-      }
+    const wantsImages = Boolean(message.downloadImages) && Array.isArray(extraction.images) && extraction.images.length > 0;
+    if (wantsImages) {
+      // Single Save As prompt + consistent output: bundle into a zip.
+      await downloadZipBundle({
+        title,
+        mdFilename: filename,
+        markdown,
+        images: extraction.images,
+        saveAs: Boolean(message.saveAs)
+      });
+      sendResponse({ ok: true, bundled: "zip" });
+      return;
     }
+
+    const mdUrl = dataUrlForMarkdown(markdown);
+    await chrome.downloads.download({ url: mdUrl, filename, saveAs: Boolean(message.saveAs) });
 
     sendResponse({ ok: true });
   })().catch((err) => {
@@ -95,4 +145,3 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return true;
 });
-
