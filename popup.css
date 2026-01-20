@@ -28,6 +28,10 @@ body {
   font-size: 12px;
 }
 
+.status.status-error {
+  color: #b45353;
+}
+
 .row {
   margin: 8px 0;
 }
@@ -69,4 +73,3 @@ button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
-

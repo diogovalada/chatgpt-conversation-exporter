@@ -5,6 +5,11 @@ function setStatus(text) {
   el.textContent = text;
 }
 
+function setStatusError(isError) {
+  const el = document.getElementById("status");
+  el.classList.toggle("status-error", Boolean(isError));
+}
+
 async function getActiveTabId() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab?.id ?? null;
@@ -43,16 +48,19 @@ async function main() {
   const tabId = await getActiveTabId();
   if (!tabId) {
     setStatus("No active tab.");
+    setStatusError(true);
     return;
   }
 
   const supported = await ping(tabId);
   if (!supported) {
     setStatus("Open a ChatGPT conversation tab.");
+    setStatusError(true);
     return;
   }
 
   setStatus("Ready.");
+  setStatusError(false);
   saveDownloadsEl.disabled = false;
   saveAsEl.disabled = false;
 
@@ -86,4 +94,3 @@ async function main() {
 main().catch((err) => {
   setStatus(`Error: ${String(err?.message ?? err)}`);
 });
-
