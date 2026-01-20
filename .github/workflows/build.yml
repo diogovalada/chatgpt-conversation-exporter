@@ -1,0 +1,31 @@
+name: Build Extension Zip
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create zip
+        run: |
+          zip -r chatgpt-markdown-exporter.zip \
+            manifest.json \
+            background.js \
+            content_script.js \
+            popup.html \
+            popup.css \
+            popup.js \
+            vendor \
+            icons
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-markdown-exporter
+          path: chatgpt-markdown-exporter.zip
+

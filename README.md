@@ -1,11 +1,11 @@
-# ChatGPT Markdown Downloader (Chrome Extension)
+# ChatGPT Markdown Exporter (Chrome Extension)
 
 ## Load unpacked
 
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
-4. Select the `extension/` folder
+4. Select the folder containing `manifest.json` (this directory)
 
 ## Usage
 
@@ -21,3 +21,7 @@ When you open the 3-dots menu for a conversation in the left sidebar, the extens
 ## Privacy
 
 See `PRIVACY.md`.
+
+## GitHub Actions (auto-build on push)
+
+If you host this folder as the repository root on GitHub, the workflow in `.github/workflows/build.yml` will build a `chatgpt-markdown-exporter.zip` artifact on every push to `main`.
