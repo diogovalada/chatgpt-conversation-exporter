@@ -13,3 +13,7 @@
 - Click the extension icon
 - Choose **Save to Downloads** or **Save As…**
 - Optional: enable **Download images** to download a single `.zip` that contains the `.md` and a `*-assets/` folder
+
+## Sidebar menu integration (experimental)
+
+When you open the 3-dots menu for a conversation in the left sidebar, the extension injects a **Download** option under **Share**.

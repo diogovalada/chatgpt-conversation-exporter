@@ -36,7 +36,7 @@ function extFromContentType(contentType) {
 }
 
 async function fetchAsUint8(url) {
-  const res = await fetch(url, { credentials: "omit" });
+  const res = await fetch(url, { credentials: "include" });
   if (!res.ok) throw new Error(`Failed to fetch ${url} (${res.status})`);
   const ct = res.headers.get("content-type") || "";
   const buf = new Uint8Array(await res.arrayBuffer());
@@ -91,8 +91,89 @@ async function downloadZipBundle({ title, mdFilename, markdown, images, saveAs }
   }
 }
 
+function delay(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitForConversationInTab(tabId, timeoutMs = 60_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const ping = await chrome.tabs.sendMessage(tabId, { type: "PING" });
+      if (ping?.ok) return true;
+    } catch {
+      // Content script not ready yet.
+    }
+    await delay(500);
+  }
+  return false;
+}
+
+async function exportConversationFromUrl({ url, title, saveAs, downloadImages }) {
+  const created = await chrome.tabs.create({ url, active: false });
+  const tabId = created?.id;
+  if (!tabId) throw new Error("Failed to open background tab.");
+
+  try {
+    const ready = await waitForConversationInTab(tabId, 90_000);
+    if (!ready) throw new Error("Conversation did not load in time.");
+
+    const extraction = await extractFromTab(tabId, {
+      downloadImages: Boolean(downloadImages),
+      titleOverride: title
+    });
+
+    if (!extraction?.ok) throw new Error(extraction?.error ?? "Extraction failed.");
+
+    const outTitle = extraction.title ?? title ?? "ChatGPT Conversation";
+    const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
+    const markdown = extraction.markdown ?? "";
+
+    const wantsImages =
+      Boolean(downloadImages) && Array.isArray(extraction.images) && extraction.images.length > 0;
+
+    if (wantsImages) {
+      await downloadZipBundle({
+        title: outTitle,
+        mdFilename: outFilename,
+        markdown,
+        images: extraction.images,
+        saveAs: Boolean(saveAs)
+      });
+      return { ok: true, bundled: "zip" };
+    }
+
+    const mdUrl = dataUrlForMarkdown(markdown);
+    await chrome.downloads.download({ url: mdUrl, filename: outFilename, saveAs: Boolean(saveAs) });
+    return { ok: true, bundled: "md" };
+  } finally {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    if (message?.type === "EXPORT_CONVERSATION_BY_URL") {
+      const url = String(message.url || "");
+      if (!url) {
+        sendResponse({ ok: false, error: "Missing conversation URL." });
+        return;
+      }
+      const title = String(message.title || "") || "ChatGPT Conversation";
+      const result = await exportConversationFromUrl({
+        url,
+        title,
+        saveAs: Boolean(message.saveAs),
+        downloadImages: Boolean(message.downloadImages)
+      });
+      sendResponse(result);
+      return;
+    }
+
     if (message?.type !== "EXPORT_CONVERSATION") {
       sendResponse({ ok: false, error: "Unknown message type." });
       return;
