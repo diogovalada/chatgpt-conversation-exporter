@@ -5,11 +5,21 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read version
+        id: meta
+        run: |
+          VERSION="$(node -p "require('./manifest.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create zip
         run: |
@@ -20,11 +30,18 @@ jobs:
             popup.html \
             popup.css \
             popup.js \
+            PRIVACY.md \
+            README.md \
             vendor \
             icons
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: chatgpt-conversation-exporter
-          path: chatgpt-conversation-exporter.zip
+      - name: Create/update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          TITLE="ChatGPT Conversation Exporter ${{ steps.meta.outputs.version }}"
+          NOTES="Automated build from $GITHUB_SHA"
+
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" -t "$TITLE" -n "$NOTES"
+          gh release upload "$TAG" chatgpt-conversation-exporter.zip --clobber
