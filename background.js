@@ -47,6 +47,39 @@ function linkDest(raw) {
   return `<${encodeURI(String(raw ?? ""))}>`;
 }
 
+function uint8ToBase64(uint8) {
+  // btoa expects a binary string; build it in chunks to avoid call stack limits.
+  if (typeof btoa !== "function") {
+    throw new Error("Base64 encoding is not available in this context.");
+  }
+
+  const parts = [];
+  const chunkSize = 0x8000;
+  for (let i = 0; i < uint8.length; i += chunkSize) {
+    const chunk = uint8.subarray(i, i + chunkSize);
+    parts.push(String.fromCharCode(...chunk));
+  }
+  return btoa(parts.join(""));
+}
+
+async function downloadUint8({ bytes, mimeType, filename, saveAs }) {
+  // MV3 service workers may not support URL.createObjectURL; fall back to data: URLs.
+  if (typeof URL?.createObjectURL === "function" && typeof URL?.revokeObjectURL === "function") {
+    const blob = new Blob([bytes], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    try {
+      await chrome.downloads.download({ url, filename, saveAs: Boolean(saveAs) });
+      return;
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    }
+  }
+
+  const base64 = uint8ToBase64(bytes);
+  const url = `data:${mimeType};base64,${base64}`;
+  await chrome.downloads.download({ url, filename, saveAs: Boolean(saveAs) });
+}
+
 async function downloadZipBundle({ title, mdFilename, markdown, images, saveAs }) {
   const safeTitle = sanitizeFilenamePart(title);
   const zipName = `${safeTitle}.zip`;
@@ -76,19 +109,12 @@ async function downloadZipBundle({ title, mdFilename, markdown, images, saveAs }
   files[mdFilename] = strToU8(patchedMarkdown);
 
   const zipped = zipSync(files, { level: 6 });
-  const blob = new Blob([zipped], { type: "application/zip" });
-  const url = URL.createObjectURL(blob);
-
-  try {
-    await chrome.downloads.download({
-      url,
-      filename: zipName,
-      saveAs: Boolean(saveAs)
-    });
-  } finally {
-    // Give Chrome a moment to start the download before releasing.
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }
+  await downloadUint8({
+    bytes: zipped,
+    mimeType: "application/zip",
+    filename: zipName,
+    saveAs: Boolean(saveAs)
+  });
 }
 
 function delay(ms) {
