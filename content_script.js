@@ -84,6 +84,12 @@ function makeImageFilename(index, url) {
 function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }) {
   const linkDest = (raw) => `<${encodeURI(String(raw ?? ""))}>`;
 
+  function extractLatexFromKatex(el) {
+    const ann = el.querySelector?.('annotation[encoding="application/x-tex"]');
+    const tex = (ann?.textContent ?? "").trim();
+    return tex || "";
+  }
+
   function convertChildren(el, ctx) {
     let out = "";
     for (const child of Array.from(el.childNodes)) {
@@ -172,6 +178,19 @@ function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }
 
     const el = node;
     const tag = el.tagName;
+
+    // ChatGPT renders math via KaTeX. Prefer extracting the original LaTeX
+    // (annotation[encoding="application/x-tex"]) instead of textContent, which
+    // often concatenates multiple representations (MathML + rendered HTML).
+    if (el.classList?.contains("katex-display")) {
+      const tex = extractLatexFromKatex(el);
+      if (tex) return `\n$$\n${tex}\n$$\n\n`;
+    }
+
+    if (el.classList?.contains("katex")) {
+      const tex = extractLatexFromKatex(el);
+      if (tex) return `$${tex}$`;
+    }
 
     if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") return "";
     if (tag === "BUTTON" || tag === "SVG" || tag === "USE" || tag === "LABEL") return "";
