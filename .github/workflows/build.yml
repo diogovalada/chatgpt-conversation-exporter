@@ -21,7 +21,29 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Check if release is needed
+        id: release_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_TAG="${{ steps.meta.outputs.tag }}"
+          LATEST_TAG="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" != "$TARGET_TAG" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Will create release: $TARGET_TAG (latest: ${LATEST_TAG:-none})"
+            echo "### Release" >> "$GITHUB_STEP_SUMMARY"
+            echo "Will create release **$TARGET_TAG** (latest: ${LATEST_TAG:-none})." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "No release: manifest version unchanged ($TARGET_TAG)"
+            echo "### Release" >> "$GITHUB_STEP_SUMMARY"
+            echo "No release — manifest version unchanged (**$TARGET_TAG**)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Create zip
+        if: steps.release_check.outputs.should_release == 'true'
         run: |
           zip -r chatgpt-conversation-exporter.zip \
             manifest.json \
@@ -36,6 +58,7 @@ jobs:
             icons
 
       - name: Create/update GitHub Release
+        if: steps.release_check.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
