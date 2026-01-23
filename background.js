@@ -135,6 +135,35 @@ async function waitForConversationInTab(tabId, timeoutMs = 60_000) {
   return false;
 }
 
+async function getMarkdownFromUrl({ url, title }) {
+  const created = await chrome.tabs.create({ url, active: false });
+  const tabId = created?.id;
+  if (!tabId) throw new Error("Failed to open background tab.");
+
+  try {
+    const ready = await waitForConversationInTab(tabId, 90_000);
+    if (!ready) throw new Error("Conversation did not load in time.");
+
+    const extraction = await extractFromTab(tabId, {
+      downloadImages: false,
+      titleOverride: title
+    });
+
+    if (!extraction?.ok) throw new Error(extraction?.error ?? "Extraction failed.");
+
+    const outTitle = extraction.title ?? title ?? "ChatGPT Conversation";
+    const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
+    const markdown = extraction.markdown ?? "";
+    return { ok: true, title: outTitle, filename: outFilename, markdown };
+  } finally {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 async function exportConversationFromUrl({ url, title, saveAs, downloadImages }) {
   const created = await chrome.tabs.create({ url, active: false });
   const tabId = created?.id;
@@ -183,6 +212,45 @@ async function exportConversationFromUrl({ url, title, saveAs, downloadImages })
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    if (message?.type === "GET_MARKDOWN_BY_URL") {
+      const url = String(message.url || "");
+      if (!url) {
+        sendResponse({ ok: false, error: "Missing conversation URL." });
+        return;
+      }
+      const title = String(message.title || "") || "ChatGPT Conversation";
+      const res = await getMarkdownFromUrl({ url, title });
+      sendResponse(res);
+      return;
+    }
+
+    if (message?.type === "GET_MARKDOWN") {
+      const tabId = await getActiveTabId();
+      if (!tabId) {
+        sendResponse({ ok: false, error: "No active tab." });
+        return;
+      }
+
+      let extraction;
+      try {
+        extraction = await extractFromTab(tabId, { downloadImages: false });
+      } catch {
+        sendResponse({ ok: false, error: "This page is not supported (content script not available)." });
+        return;
+      }
+
+      if (!extraction?.ok) {
+        sendResponse({ ok: false, error: extraction?.error ?? "Extraction failed." });
+        return;
+      }
+
+      const title = extraction.title ?? "ChatGPT Conversation";
+      const filename = extraction.filename ?? mdFilenameForTitle(title);
+      const markdown = extraction.markdown ?? "";
+      sendResponse({ ok: true, title, filename, markdown });
+      return;
+    }
+
     if (message?.type === "EXPORT_CONVERSATION_BY_URL") {
       const url = String(message.url || "");
       if (!url) {

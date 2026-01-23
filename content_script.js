@@ -500,6 +500,7 @@ function ensureSidebarPanelStyles() {
     .cgpt-md-dl-row{display:flex; align-items:center; justify-content:space-between; gap:10px;}
     .cgpt-md-dl-title{font-weight:600;}
     .cgpt-md-dl-muted{color:rgba(255,255,255,.7); font-size:12px; margin-top:6px;}
+    .cgpt-md-dl-btn-full{width:100%; margin-top:12px;}
     .cgpt-md-dl-actions{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px;}
     .cgpt-md-dl-btn{
       border:1px solid rgba(255,255,255,.14);
@@ -547,6 +548,31 @@ function setPanelStatus(text, kind) {
   el.classList.toggle("cgpt-md-dl-status-ok", kind === "ok");
 }
 
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // fall back
+  }
+
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "true");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 async function openSidebarPanel(selection) {
   ensureSidebarPanelStyles();
   closeSidebarPanel();
@@ -574,6 +600,7 @@ async function openSidebarPanel(selection) {
       <input type="checkbox" id="cgpt-md-dl-images" />
       Download images (bundles as .zip)
     </label>
+    <button class="cgpt-md-dl-btn cgpt-md-dl-btn-primary cgpt-md-dl-btn-full" id="cgpt-md-dl-copy">Copy Markdown</button>
     <div class="cgpt-md-dl-actions">
       <button class="cgpt-md-dl-btn cgpt-md-dl-btn-primary" id="cgpt-md-dl-save">Save to Downloads</button>
       <button class="cgpt-md-dl-btn" id="cgpt-md-dl-saveas">Save As…</button>
@@ -592,32 +619,70 @@ async function openSidebarPanel(selection) {
     await saveSettings({ downloadImages: cb.checked });
   });
 
+  const copyBtn = panel.querySelector("#cgpt-md-dl-copy");
   const saveBtn = panel.querySelector("#cgpt-md-dl-save");
   const saveAsBtn = panel.querySelector("#cgpt-md-dl-saveas");
 
-  const run = async (saveAs) => {
+  const withDisabled = async (fn) => {
+    copyBtn.disabled = true;
     saveBtn.disabled = true;
     saveAsBtn.disabled = true;
-    setPanelStatus("Exporting…");
     try {
-      const res = await chrome.runtime.sendMessage({
-        type: "EXPORT_CONVERSATION_BY_URL",
-        url: selection.url,
-        title: selection.title,
-        saveAs,
-        downloadImages: cb.checked
-      });
-      if (res?.ok) {
-        setPanelStatus(cb.checked ? "Downloaded (.zip)." : "Downloaded (.md).", "ok");
-      } else {
-        setPanelStatus(`Failed: ${res?.error ?? "unknown error"}`, "error");
-      }
-    } catch (err) {
-      setPanelStatus(`Failed: ${String(err?.message ?? err)}`, "error");
+      return await fn();
     } finally {
+      copyBtn.disabled = false;
       saveBtn.disabled = false;
       saveAsBtn.disabled = false;
     }
+  };
+
+  copyBtn.addEventListener("click", async () => {
+    await withDisabled(async () => {
+      setPanelStatus("Copying…");
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: "GET_MARKDOWN_BY_URL",
+          url: selection.url,
+          title: selection.title
+        });
+        if (!res?.ok) {
+          setPanelStatus(`Failed: ${res?.error ?? "unknown error"}`, "error");
+          return;
+        }
+
+        const ok = await copyTextToClipboard(res.markdown ?? "");
+        if (!ok) {
+          setPanelStatus("Failed: clipboard write was blocked.", "error");
+          return;
+        }
+
+        setPanelStatus("Copied Markdown to clipboard.", "ok");
+      } catch (err) {
+        setPanelStatus(`Failed: ${String(err?.message ?? err)}`, "error");
+      }
+    });
+  });
+
+  const run = async (saveAs) => {
+    await withDisabled(async () => {
+      setPanelStatus("Exporting…");
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: "EXPORT_CONVERSATION_BY_URL",
+          url: selection.url,
+          title: selection.title,
+          saveAs,
+          downloadImages: cb.checked
+        });
+        if (res?.ok) {
+          setPanelStatus(cb.checked ? "Downloaded (.zip)." : "Downloaded (.md).", "ok");
+        } else {
+          setPanelStatus(`Failed: ${res?.error ?? "unknown error"}`, "error");
+        }
+      } catch (err) {
+        setPanelStatus(`Failed: ${String(err?.message ?? err)}`, "error");
+      }
+    });
   };
 
   saveBtn.addEventListener("click", () => run(false));

@@ -10,6 +10,31 @@ function setStatusError(isError) {
   el.classList.toggle("status-error", Boolean(isError));
 }
 
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // fall back
+  }
+
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "true");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 async function getActiveTabId() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab?.id ?? null;
@@ -35,6 +60,7 @@ async function saveSettings(settings) {
 
 async function main() {
   const downloadImagesEl = document.getElementById("downloadImages");
+  const copyMarkdownEl = document.getElementById("copyMarkdown");
   const saveDownloadsEl = document.getElementById("saveDownloads");
   const saveAsEl = document.getElementById("saveAs");
 
@@ -61,8 +87,48 @@ async function main() {
 
   setStatus("Ready.");
   setStatusError(false);
+  copyMarkdownEl.disabled = false;
   saveDownloadsEl.disabled = false;
   saveAsEl.disabled = false;
+
+  copyMarkdownEl.addEventListener("click", async () => {
+    copyMarkdownEl.disabled = true;
+    saveDownloadsEl.disabled = true;
+    saveAsEl.disabled = true;
+    setStatus("Copying…");
+    setStatusError(false);
+
+    try {
+      const extraction = await chrome.tabs.sendMessage(tabId, {
+        type: "EXTRACT_CONVERSATION",
+        options: { downloadImages: false }
+      });
+
+      if (!extraction?.ok) {
+        setStatus(`Failed: ${extraction?.error ?? "Extraction failed."}`);
+        setStatusError(true);
+        return;
+      }
+
+      const markdown = extraction.markdown ?? "";
+      const ok = await copyToClipboard(markdown);
+      if (!ok) {
+        setStatus("Failed: clipboard write was blocked.");
+        setStatusError(true);
+        return;
+      }
+
+      setStatus("Copied Markdown to clipboard.");
+      setStatusError(false);
+    } catch (err) {
+      setStatus(`Failed: ${String(err?.message ?? err)}`);
+      setStatusError(true);
+    } finally {
+      copyMarkdownEl.disabled = false;
+      saveDownloadsEl.disabled = false;
+      saveAsEl.disabled = false;
+    }
+  });
 
   saveDownloadsEl.addEventListener("click", async () => {
     saveDownloadsEl.disabled = true;
