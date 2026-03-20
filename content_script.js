@@ -285,20 +285,63 @@ function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }
   };
 }
 
+function findConversationRoot() {
+  return (
+    document.querySelector("#thread") ||
+    document.querySelector("main #thread") ||
+    document.querySelector("main") ||
+    document.querySelector('[role="main"]') ||
+    document.body
+  );
+}
+
+function getConversationTurnContainers(root = findConversationRoot()) {
+  const selectors = [
+    'article[data-testid^="conversation-turn-"]',
+    'article[data-turn]',
+    '[data-turn]'
+  ];
+
+  for (const selector of selectors) {
+    const turns = Array.from(root.querySelectorAll(selector)).filter((el) =>
+      Boolean(el.querySelector("[data-message-author-role]"))
+    );
+    if (turns.length > 0) return turns;
+  }
+
+  const messageEls = Array.from(root.querySelectorAll("[data-message-author-role]"));
+  if (messageEls.length === 0) return [];
+
+  const turns = [];
+  const seen = new Set();
+  for (const msgEl of messageEls) {
+    const turnEl = msgEl.closest("article, [data-turn]") || msgEl;
+    if (seen.has(turnEl)) continue;
+    seen.add(turnEl);
+    turns.push(turnEl);
+  }
+  return turns;
+}
+
+function hasConversationContent(root = findConversationRoot()) {
+  return Boolean(
+    root.querySelector(
+      'article[data-testid^="conversation-turn-"], article[data-turn], [data-turn], [data-message-author-role]'
+    )
+  );
+}
+
 function extractConversation({ downloadImages, titleOverride }) {
   const title = String(titleOverride || document.title || "ChatGPT Conversation");
   const safeTitle = sanitizeFilenamePart(title);
   const mdFilename = `${safeTitle}.md`;
   const imageFolder = `${safeTitle}-assets`;
 
-  const root =
-    document.querySelector("main") ||
-    document.querySelector('[role="main"]') ||
-    document.body;
+  const root = findConversationRoot();
 
-  const turnArticles = Array.from(root.querySelectorAll('article[data-testid^="conversation-turn-"]'));
+  const turnArticles = getConversationTurnContainers(root);
   if (turnArticles.length === 0) {
-    return { ok: false, error: "No conversation turns found." };
+    return { ok: false, error: "No conversation content found." };
   }
 
   const imageCollector = [];
@@ -419,7 +462,7 @@ function extractConversation({ downloadImages, titleOverride }) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PING") {
-    const ok = Boolean(document.querySelector('article[data-testid^="conversation-turn-"]'));
+    const ok = getConversationTurnContainers().length > 0;
     sendResponse({ ok });
     return;
   }

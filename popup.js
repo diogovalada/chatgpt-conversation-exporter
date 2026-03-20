@@ -40,13 +40,25 @@ async function getActiveTabId() {
   return tab?.id ?? null;
 }
 
-async function ping(tabId) {
-  try {
-    const res = await chrome.tabs.sendMessage(tabId, { type: "PING" });
-    return res?.ok === true;
-  } catch {
-    return false;
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ping(tabId, { attempts = 8, delayMs = 350 } = {}) {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const res = await chrome.tabs.sendMessage(tabId, { type: "PING" });
+      if (res?.ok === true) return true;
+    } catch {
+      // Content script may not be ready yet.
+    }
+
+    if (i < attempts - 1) {
+      await delay(delayMs);
+    }
   }
+
+  return false;
 }
 
 async function loadSettings() {
@@ -80,7 +92,7 @@ async function main() {
 
   const supported = await ping(tabId);
   if (!supported) {
-    setStatus("Open a ChatGPT conversation tab.");
+    setStatus("Open a loaded ChatGPT conversation tab.");
     setStatusError(true);
     return;
   }
