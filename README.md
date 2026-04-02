@@ -1,4 +1,6 @@
-# ChatGPT Conversation Exporter (Chrome Extension)
+# AI Conversation Exporter (Chrome Extension)
+
+Exports ChatGPT and Claude conversations to Markdown or a single zip bundle with local image assets.
 
 ## Install from GitHub Releases (recommended)
 
@@ -12,18 +14,44 @@
 4. Click **Load unpacked**
 5. Select the extracted folder (the one containing `manifest.json`)
 
+## Supported Providers
+
+- ChatGPT on `chatgpt.com` and `chat.openai.com`
+- Claude on `claude.ai`
+
 ## Usage
 
-### Method 1: Currently opened conversation method
+### Method 1: Currently opened conversation
 
-- Open a ChatGPT conversation on `chatgpt.com` (or `chat.openai.com`)
+- Open a ChatGPT or Claude conversation
 - Click the extension icon
 - Choose **Save to Downloads** or **Save As…**
 - Optional: enable **Download images** to download a single `.zip` that contains the `.md` and a `*-assets/` folder
 
 ### Method 2: Download from conversation list (left sidebar)
 
-When you open the 3-dots menu for a conversation in the left sidebar, click the **Download**. This will open a background tab (which is automatically closed afterwards) and download the conversation
+When you open the 3-dots menu for a supported conversation in the left sidebar, click **Download**. This opens a background tab, exports the conversation, and closes the tab automatically afterwards.
+
+## Provider Support Checklist
+
+When adding a new provider, verify these cases before calling support complete:
+
+- User prompts, including multi-line prompts
+- Assistant Markdown, headings, lists, links, and tables
+- Code blocks and any detached tool output blocks
+- Math and KaTeX content via `annotation[encoding="application/x-tex"]`
+- Uploaded images inside user turns
+- Generated images or assistant-side image attachments
+- Sidebar conversation selection and background-tab export by URL
+
+For the full regression checklist and a suggested "golden conversation" fixture, see [TEST_CHECKLIST.md](./TEST_CHECKLIST.md).
+
+## Known Limitations
+
+- The exporter does not currently auto-expand collapsed sections before extraction.
+- If a provider lazily loads the contents of collapsed sections only after they are expanded, that hidden content will not be exported.
+- This is known to affect Claude saved HTML snapshots when tool or activity panels were still collapsed at save time, because the inner code/output content may be missing from the saved DOM entirely.
+- A future enhancement could expand supported collapsed sections automatically before export, extract their contents, and optionally restore the previous collapsed state afterwards.
 
 ## Privacy
 
