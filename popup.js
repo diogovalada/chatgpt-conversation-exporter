@@ -1,5 +1,10 @@
 const STORAGE_KEY = "chatgpt_md_downloader_settings";
 
+function setAppName(text) {
+  const el = document.getElementById("appName");
+  if (el && text) el.textContent = `${text} → Markdown`;
+}
+
 function setStatus(text) {
   const el = document.getElementById("status");
   el.textContent = text;
@@ -48,7 +53,8 @@ async function ping(tabId, { attempts = 8, delayMs = 350 } = {}) {
   for (let i = 0; i < attempts; i += 1) {
     try {
       const res = await chrome.tabs.sendMessage(tabId, { type: "PING" });
-      if (res?.ok === true) return true;
+      if (res?.ok === true) return res;
+      if (res?.providerName) return res;
     } catch {
       // Content script may not be ready yet.
     }
@@ -75,6 +81,11 @@ async function main() {
   const copyMarkdownEl = document.getElementById("copyMarkdown");
   const saveDownloadsEl = document.getElementById("saveDownloads");
   const saveAsEl = document.getElementById("saveAs");
+  const setButtonsEnabled = (enabled) => {
+    copyMarkdownEl.disabled = !enabled;
+    saveDownloadsEl.disabled = !enabled;
+    saveAsEl.disabled = !enabled;
+  };
 
   const settings = await loadSettings();
   downloadImagesEl.checked = Boolean(settings.downloadImages);
@@ -90,23 +101,23 @@ async function main() {
     return;
   }
 
-  const supported = await ping(tabId);
-  if (!supported) {
-    setStatus("Open a loaded ChatGPT conversation tab.");
+  const pingResult = await ping(tabId);
+  if (pingResult?.providerName) {
+    setAppName(pingResult.providerName);
+  }
+
+  if (!pingResult?.ok) {
+    setStatus("Open a loaded ChatGPT or Claude conversation tab.");
     setStatusError(true);
     return;
   }
 
-  setStatus("Ready.");
+  setStatus(`Ready for ${pingResult.providerName ?? "conversation export"}.`);
   setStatusError(false);
-  copyMarkdownEl.disabled = false;
-  saveDownloadsEl.disabled = false;
-  saveAsEl.disabled = false;
+  setButtonsEnabled(true);
 
   copyMarkdownEl.addEventListener("click", async () => {
-    copyMarkdownEl.disabled = true;
-    saveDownloadsEl.disabled = true;
-    saveAsEl.disabled = true;
+    setButtonsEnabled(false);
     setStatus("Copying…");
     setStatusError(false);
 
@@ -136,36 +147,52 @@ async function main() {
       setStatus(`Failed: ${String(err?.message ?? err)}`);
       setStatusError(true);
     } finally {
-      copyMarkdownEl.disabled = false;
-      saveDownloadsEl.disabled = false;
-      saveAsEl.disabled = false;
+      setButtonsEnabled(true);
     }
   });
 
   saveDownloadsEl.addEventListener("click", async () => {
-    saveDownloadsEl.disabled = true;
-    saveAsEl.disabled = true;
+    setButtonsEnabled(false);
     setStatus("Exporting…");
-    const downloadImages = downloadImagesEl.checked;
-    const res = await chrome.runtime.sendMessage({
-      type: "EXPORT_CONVERSATION",
-      saveAs: false,
-      downloadImages
-    });
-    setStatus(res?.ok ? "Downloaded." : `Failed: ${res?.error ?? "unknown error"}`);
+    setStatusError(false);
+
+    try {
+      const downloadImages = downloadImagesEl.checked;
+      const res = await chrome.runtime.sendMessage({
+        type: "EXPORT_CONVERSATION",
+        saveAs: false,
+        downloadImages
+      });
+      setStatus(res?.ok ? "Downloaded." : `Failed: ${res?.error ?? "unknown error"}`);
+      setStatusError(!res?.ok);
+    } catch (err) {
+      setStatus(`Failed: ${String(err?.message ?? err)}`);
+      setStatusError(true);
+    } finally {
+      setButtonsEnabled(true);
+    }
   });
 
   saveAsEl.addEventListener("click", async () => {
-    saveDownloadsEl.disabled = true;
-    saveAsEl.disabled = true;
+    setButtonsEnabled(false);
     setStatus("Exporting…");
-    const downloadImages = downloadImagesEl.checked;
-    const res = await chrome.runtime.sendMessage({
-      type: "EXPORT_CONVERSATION",
-      saveAs: true,
-      downloadImages
-    });
-    setStatus(res?.ok ? "Saved." : `Failed: ${res?.error ?? "unknown error"}`);
+    setStatusError(false);
+
+    try {
+      const downloadImages = downloadImagesEl.checked;
+      const res = await chrome.runtime.sendMessage({
+        type: "EXPORT_CONVERSATION",
+        saveAs: true,
+        downloadImages
+      });
+      setStatus(res?.ok ? "Saved." : `Failed: ${res?.error ?? "unknown error"}`);
+      setStatusError(!res?.ok);
+    } catch (err) {
+      setStatus(`Failed: ${String(err?.message ?? err)}`);
+      setStatusError(true);
+    } finally {
+      setButtonsEnabled(true);
+    }
   });
 }
 

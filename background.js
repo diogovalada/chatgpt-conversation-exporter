@@ -4,7 +4,7 @@ function sanitizeFilenamePart(input) {
   const trimmed = String(input ?? "").trim();
   const noControl = trimmed.replace(/[\u0000-\u001f\u007f]/g, "");
   const noBadChars = noControl.replace(/[<>:"/\\|?*]+/g, " ").replace(/\s+/g, " ").trim();
-  return noBadChars || "ChatGPT Conversation";
+  return noBadChars || "AI Conversation";
 }
 
 function mdFilenameForTitle(title) {
@@ -151,7 +151,7 @@ async function getMarkdownFromUrl({ url, title }) {
 
     if (!extraction?.ok) throw new Error(extraction?.error ?? "Extraction failed.");
 
-    const outTitle = extraction.title ?? title ?? "ChatGPT Conversation";
+    const outTitle = extraction.title ?? title ?? "AI Conversation";
     const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
     const markdown = extraction.markdown ?? "";
     return { ok: true, title: outTitle, filename: outFilename, markdown };
@@ -180,7 +180,7 @@ async function exportConversationFromUrl({ url, title, saveAs, downloadImages })
 
     if (!extraction?.ok) throw new Error(extraction?.error ?? "Extraction failed.");
 
-    const outTitle = extraction.title ?? title ?? "ChatGPT Conversation";
+    const outTitle = extraction.title ?? title ?? "AI Conversation";
     const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
     const markdown = extraction.markdown ?? "";
 
@@ -218,7 +218,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: false, error: "Missing conversation URL." });
         return;
       }
-      const title = String(message.title || "") || "ChatGPT Conversation";
+      const title = String(message.title || "") || "AI Conversation";
       const res = await getMarkdownFromUrl({ url, title });
       sendResponse(res);
       return;
@@ -244,7 +244,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
 
-      const title = extraction.title ?? "ChatGPT Conversation";
+      const title = extraction.title ?? "AI Conversation";
       const filename = extraction.filename ?? mdFilenameForTitle(title);
       const markdown = extraction.markdown ?? "";
       sendResponse({ ok: true, title, filename, markdown });
@@ -257,7 +257,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: false, error: "Missing conversation URL." });
         return;
       }
-      const title = String(message.title || "") || "ChatGPT Conversation";
+      const title = String(message.title || "") || "AI Conversation";
       const result = await exportConversationFromUrl({
         url,
         title,
@@ -292,7 +292,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return;
     }
 
-    const title = extraction.title ?? "ChatGPT Conversation";
+    const title = extraction.title ?? "AI Conversation";
     const filename = extraction.filename ?? mdFilenameForTitle(title);
     const markdown = extraction.markdown ?? "";
 
