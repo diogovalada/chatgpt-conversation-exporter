@@ -73,6 +73,30 @@
     return out;
   }
 
+  function escapeHtml(text) {
+    return String(text ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function wrapCollapsibleSection(summary, body) {
+    const safeSummary = escapeHtml(summary);
+    const trimmedBody = String(body ?? "").trim();
+
+    if (!safeSummary) {
+      return trimmedBody;
+    }
+
+    if (!trimmedBody) {
+      return `<details>\n<summary>${safeSummary}</summary>\n</details>`;
+    }
+
+    return `<details>\n<summary>${safeSummary}</summary>\n\n${trimmedBody}\n</details>`;
+  }
+
   function maybeCloseRadixMenu() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   }
@@ -212,9 +236,11 @@
     isText,
     normalizeText,
     normalizeTextTrim,
+    escapeHtml,
     sanitizeFilenamePart,
     sortNodesByDomOrder,
-    titleCaseRole
+    titleCaseRole,
+    wrapCollapsibleSection
   };
   ns.menuUtils = {
     injectDownloadIntoMenu,

@@ -5,7 +5,8 @@
     dedupeNodes,
     findDescendantsByClassToken,
     isElement,
-    normalizeTextTrim
+    normalizeTextTrim,
+    wrapCollapsibleSection
   } = ns.helpers;
 
   const provider = {
@@ -332,19 +333,17 @@
     const status = getExecutionPanelStatus(panelEl);
     const expanded = isExecutionPanelExpanded(panelEl);
 
-    let md = "";
-    if (title) {
-      md += `${cards.length > 0 ? "**Code Execution:**" : "**Claude Activity:**"} ${title}\n\n`;
-    }
+    const summary = `${cards.length > 0 ? "Code Execution" : "Claude Activity"}${title ? `: ${title}` : ""}`;
+    let body = "";
 
     if (cards.length === 0) {
       if (!expanded) {
-        md += "> Collapsed in the saved Claude snapshot. The inner code/output content was not present in the HTML.\n\n";
+        body += "> Collapsed in the saved Claude snapshot. The inner code/output content was not present in the HTML.\n\n";
       }
       if (status) {
-        md += `**Status:** ${status}\n\n`;
+        body += `**Status:** ${status}\n\n`;
       }
-      return md.trim();
+      return wrapCollapsibleSection(summary, body);
     }
 
     for (const card of dedupeNodes(cards)) {
@@ -354,22 +353,22 @@
       if (!raw.trim()) continue;
 
       if (label.toLowerCase() === "output") {
-        md += `**Output:**\n\n\`\`\`text\n${raw}\n\`\`\`\n\n`;
+        body += `**Output:**\n\n\`\`\`text\n${raw}\n\`\`\`\n\n`;
         continue;
       }
 
       const language = getCodeFenceLanguage(card, codeEl, label);
       if (label && label.toLowerCase() !== language.toLowerCase()) {
-        md += `**${label}:**\n\n`;
+        body += `**${label}:**\n\n`;
       }
-      md += `\`\`\`${language}\n${raw}\n\`\`\`\n\n`;
+      body += `\`\`\`${language}\n${raw}\n\`\`\`\n\n`;
     }
 
     if (status) {
-      md += `**Status:** ${status}\n\n`;
+      body += `**Status:** ${status}\n\n`;
     }
 
-    return md.trim();
+    return wrapCollapsibleSection(summary, body);
   }
 
   function isLikelyConversationMenu(menuItems) {

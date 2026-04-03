@@ -1,6 +1,6 @@
 (() => {
   const ns = window.ChatExporter;
-  const { compareDomOrder, normalizeTextTrim } = ns.helpers;
+  const { compareDomOrder, normalizeTextTrim, wrapCollapsibleSection } = ns.helpers;
 
   const provider = {
     id: "chatgpt",
@@ -159,6 +159,14 @@
       toMarkdown(converter) {
         const blocks = [];
         const hasMessageAncestor = (el) => Boolean(el.closest("[data-message-author-role]"));
+        const collapsibleSections = getChatGptCollapsibleSections(article);
+        const collapsibleBodies = collapsibleSections
+          .map((section) => section.bodyEl)
+          .filter(Boolean);
+
+        for (const section of collapsibleSections) {
+          blocks.push({ type: "collapsible", el: section.headerEl, section });
+        }
 
         for (const msgEl of assistantMsgs) {
           const markdownRoot = msgEl.querySelector(".markdown") || msgEl;
@@ -167,6 +175,7 @@
 
         for (const preEl of Array.from(article.querySelectorAll("pre"))) {
           if (hasMessageAncestor(preEl)) continue;
+          if (collapsibleBodies.some((bodyEl) => bodyEl.contains(preEl))) continue;
 
           const codeEl = preEl.querySelector("code");
           if (codeEl) {
@@ -193,6 +202,12 @@
           if (!block?.el || seen.has(block.el)) continue;
           seen.add(block.el);
 
+          if (block.type === "collapsible") {
+            const chunk = renderChatGptCollapsibleSection(block.section, converter);
+            if (chunk) md += `${chunk}\n\n`;
+            continue;
+          }
+
           if (block.type === "tool_output") {
             const output = (block.el.textContent ?? "").replace(/\n$/, "");
             if (!output.trim()) continue;
@@ -207,6 +222,100 @@
         return md.trim();
       }
     };
+  }
+
+  function getChatGptCollapsibleSections(article) {
+    const root = article.querySelector(".flex.max-w-full.flex-col.grow") || article;
+    const children = Array.from(root.children || []);
+    const sections = [];
+
+    for (let i = 0; i < children.length; i += 1) {
+      const headerEl = children[i];
+      const summary = getChatGptCollapsibleSummary(headerEl);
+      if (!summary) continue;
+
+      const bodyCandidate = children[i + 1];
+      const bodyEl = isChatGptCollapsibleBody(bodyCandidate) ? bodyCandidate : null;
+      sections.push({ headerEl, bodyEl, summary });
+
+      if (bodyEl) i += 1;
+    }
+
+    return sections;
+  }
+
+  function getChatGptCollapsibleSummary(headerEl) {
+    if (!headerEl || headerEl.tagName !== "SPAN") return "";
+    if ((headerEl.getAttribute("class") || "").includes("text-token-text-secondary") === false) return "";
+    if (headerEl.closest("[data-message-author-role]")) return "";
+
+    const button = headerEl.querySelector("button");
+    const text = normalizeTextTrim(button?.textContent || headerEl.textContent || "");
+    return text;
+  }
+
+  function isChatGptCollapsibleBody(el) {
+    if (!el || el.tagName !== "DIV") return false;
+    if (el.closest("[data-message-author-role]") === el) return false;
+    if (!(el.getAttribute("class") || "").includes("overflow-hidden")) return false;
+    return Boolean(el.querySelector("pre")) || Boolean(el.querySelector(".markdown"));
+  }
+
+  function renderChatGptCollapsibleSection(section, converter) {
+    const summary = section?.summary || "Details";
+    const bodyEl = section?.bodyEl || null;
+
+    if (!bodyEl) {
+      return wrapCollapsibleSection(
+        summary,
+        "> Collapsed in the saved ChatGPT snapshot. The inner content was not present in the HTML."
+      );
+    }
+
+    const items = Array.from(bodyEl.querySelectorAll("pre")).map((preEl) => {
+      const codeEl = preEl.querySelector("code");
+      if (codeEl) return { type: "code", el: preEl };
+      return { type: isChatGptResultPre(preEl, bodyEl) ? "output" : "pre", el: preEl };
+    });
+
+    items.sort((a, b) => compareDomOrder(a.el, b.el));
+
+    let body = "";
+    const seen = new Set();
+    for (const item of items) {
+      if (!item?.el || seen.has(item.el)) continue;
+      seen.add(item.el);
+
+      if (item.type === "output") {
+        const output = (item.el.textContent ?? "").replace(/\n$/, "");
+        if (!output.trim()) continue;
+        body += `**Result:**\n\n\`\`\`text\n${output}\n\`\`\`\n\n`;
+        continue;
+      }
+
+      const chunk = converter.convertElement(item.el).trim();
+      if (chunk) body += `${chunk}\n\n`;
+    }
+
+    if (!body.trim()) {
+      body = "> Collapsible section was present, but no exportable body content was recoverable from the HTML.";
+    }
+
+    return wrapCollapsibleSection(summary, body);
+  }
+
+  function isChatGptResultPre(preEl, boundaryEl) {
+    let current = preEl?.parentElement || null;
+
+    while (current && current !== boundaryEl) {
+      const hasResultLabel = Array.from(current.children || []).some(
+        (child) => child.tagName === "DIV" && normalizeTextTrim(child.textContent) === "Result"
+      );
+      if (hasResultLabel) return true;
+      current = current.parentElement;
+    }
+
+    return false;
   }
 
   function createFallbackTurn(msgEl) {
