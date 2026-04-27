@@ -34,7 +34,12 @@
     const mdFilename = `${safeTitle}.md`;
     const imageFolder = `${safeTitle}-assets`;
 
-    const turns = provider.getTurns?.() || [];
+    const selectionStatus = provider.getSelectionStatus?.() || null;
+    if (selectionStatus?.active && selectionStatus.selectedCount === 0) {
+      return { ok: false, error: "No messages are selected." };
+    }
+
+    const turns = provider.getTurns?.(options) || [];
     if (!Array.isArray(turns) || turns.length === 0) {
       return { ok: false, error: "No conversation content found." };
     }

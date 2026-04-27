@@ -2,6 +2,8 @@
   const ns = window.ChatExporter;
   const { compareDomOrder, normalizeTextTrim, wrapCollapsibleSection } = ns.helpers;
 
+  const selectionController = createSelectionController();
+
   const provider = {
     id: "chatgpt",
     name: "ChatGPT",
@@ -14,19 +16,18 @@
       return document.title || "ChatGPT Conversation";
     },
 
-    getTurns() {
-      const root = findConversationRoot();
-      const containers = getConversationTurnContainers(root);
-      if (containers.length === 0) return [];
+    getSelectionStatus() {
+      return selectionController.getStatus();
+    },
 
-      const turns = [];
-      for (const article of containers) {
-        turns.push(...buildTurnsForContainer(article));
-      }
-      return turns;
+    getTurns() {
+      const turns = buildChatGptTurns();
+      return selectionController.filterTurns(turns);
     },
 
     initSidebarIntegration(onDownloadClick) {
+      selectionController.init();
+
       if (document.documentElement.dataset.chatExporterChatgptSidebarInit === "1") return;
       document.documentElement.dataset.chatExporterChatgptSidebarInit = "1";
 
@@ -82,6 +83,17 @@
     );
   }
 
+  function buildChatGptTurns(root = findConversationRoot()) {
+    const containers = getConversationTurnContainers(root);
+    if (containers.length === 0) return [];
+
+    const turns = [];
+    for (const container of containers) {
+      turns.push(...buildTurnsForContainer(container));
+    }
+    return turns;
+  }
+
   function getConversationTurnContainers(root = findConversationRoot()) {
     const selectors = [
       'article[data-testid^="conversation-turn-"]',
@@ -91,7 +103,7 @@
 
     for (const selector of selectors) {
       const turns = Array.from(root.querySelectorAll(selector)).filter((el) =>
-        Boolean(el.querySelector("[data-message-author-role]"))
+        el.matches("[data-message-author-role]") || Boolean(el.querySelector("[data-message-author-role]"))
       );
       if (turns.length > 0) return turns;
     }
@@ -112,27 +124,37 @@
     return turns;
   }
 
-  function buildTurnsForContainer(article) {
-    const turnRole = article.getAttribute("data-turn") || "";
-    const messageEls = Array.from(article.querySelectorAll("[data-message-author-role]"));
+  function buildTurnsForContainer(containerEl) {
+    const turnRole = containerEl.getAttribute("data-turn") || "";
+    const messageEls = [
+      ...(containerEl.matches("[data-message-author-role]") ? [containerEl] : []),
+      ...Array.from(containerEl.querySelectorAll("[data-message-author-role]"))
+    ];
     if (messageEls.length === 0) return [];
 
     if (turnRole === "user") {
       const userMsgs = messageEls.filter((m) => m.getAttribute("data-message-author-role") === "user");
-      return userMsgs.length > 0 ? [createUserTurn(userMsgs)] : [];
+      return userMsgs.length > 0 ? [createUserTurn(userMsgs, containerEl)] : [];
     }
 
     if (turnRole === "assistant") {
       const assistantMsgs = messageEls.filter((m) => m.getAttribute("data-message-author-role") === "assistant");
-      return assistantMsgs.length > 0 ? [createAssistantTurn(article, assistantMsgs)] : [];
+      return assistantMsgs.length > 0 ? [createAssistantTurn(containerEl, assistantMsgs)] : [];
     }
 
     return messageEls.map((msgEl) => createFallbackTurn(msgEl));
   }
 
-  function createUserTurn(userMsgs) {
+  function createUserTurn(userMsgs, anchorEl) {
+    const stableAnchor = anchorEl || userMsgs[0] || null;
+    const turnId = makeTurnId("user", stableAnchor, userMsgs);
+    const checkboxAnchorEl = getUserCheckboxAnchor(stableAnchor, userMsgs);
+
     return {
+      id: turnId,
       role: "user",
+      anchorEl: stableAnchor,
+      checkboxAnchorEl,
       toMarkdown(converter) {
         let md = "";
 
@@ -153,13 +175,20 @@
     };
   }
 
-  function createAssistantTurn(article, assistantMsgs) {
+  function createAssistantTurn(containerEl, assistantMsgs) {
+    const stableAnchor = containerEl || assistantMsgs[0] || null;
+    const turnId = makeTurnId("assistant", stableAnchor, assistantMsgs);
+    const checkboxAnchorEl = getAssistantCheckboxAnchor(stableAnchor, assistantMsgs);
+
     return {
+      id: turnId,
       role: "assistant",
+      anchorEl: stableAnchor,
+      checkboxAnchorEl,
       toMarkdown(converter) {
         const blocks = [];
         const hasMessageAncestor = (el) => Boolean(el.closest("[data-message-author-role]"));
-        const collapsibleSections = getChatGptCollapsibleSections(article);
+        const collapsibleSections = getChatGptCollapsibleSections(containerEl);
         const collapsibleBodies = collapsibleSections
           .map((section) => section.bodyEl)
           .filter(Boolean);
@@ -173,7 +202,7 @@
           blocks.push({ type: "assistant_message", el: markdownRoot });
         }
 
-        for (const preEl of Array.from(article.querySelectorAll("pre"))) {
+        for (const preEl of Array.from(containerEl.querySelectorAll("pre"))) {
           if (hasMessageAncestor(preEl)) continue;
           if (collapsibleBodies.some((bodyEl) => bodyEl.contains(preEl))) continue;
 
@@ -224,8 +253,8 @@
     };
   }
 
-  function getChatGptCollapsibleSections(article) {
-    const root = article.querySelector(".flex.max-w-full.flex-col.grow") || article;
+  function getChatGptCollapsibleSections(containerEl) {
+    const root = containerEl.querySelector(".flex.max-w-full.flex-col.grow") || containerEl;
     const children = Array.from(root.children || []);
     const sections = [];
 
@@ -322,11 +351,659 @@
     const role = msgEl.getAttribute("data-message-author-role") || "unknown";
 
     return {
+      id: makeTurnId(role, msgEl, [msgEl]),
       role,
+      anchorEl: msgEl,
+      checkboxAnchorEl: msgEl,
       toMarkdown(converter) {
         return converter.convertElement(msgEl).trim();
       }
     };
+  }
+
+  function makeTurnId(role, anchorEl, messageEls) {
+    const parts = [];
+
+    for (const el of messageEls || []) {
+      const key =
+        el?.getAttribute?.("data-message-id") ||
+        el?.getAttribute?.("data-testid") ||
+        "";
+      if (key) parts.push(key);
+    }
+
+    const uniqueParts = Array.from(new Set(parts));
+    if (uniqueParts.length > 0) {
+      return `${role}:${uniqueParts.join("|")}`;
+    }
+
+    const anchorKey =
+      anchorEl?.getAttribute?.("data-message-id") ||
+      anchorEl?.getAttribute?.("data-testid") ||
+      "";
+    if (anchorKey) {
+      return `${role}:${anchorKey}`;
+    }
+
+    return `${role}:dom:${buildDomPath(anchorEl)}`;
+  }
+
+  function buildDomPath(el) {
+    if (!el) return "unknown";
+
+    const parts = [];
+    let current = el;
+
+    while (current && current !== document.body && parts.length < 8) {
+      let index = 0;
+      let sibling = current;
+
+      while ((sibling = sibling.previousElementSibling)) {
+        index += 1;
+      }
+
+      parts.unshift(`${current.tagName.toLowerCase()}:${index}`);
+      current = current.parentElement;
+    }
+
+    return parts.join(">");
+  }
+
+  function createSelectionController() {
+    const state = {
+      initialized: false,
+      active: false,
+      menuOpen: false,
+      defaultChecked: true,
+      knownIds: new Set(),
+      selectedIds: new Set(),
+      rafId: 0,
+      checkboxEls: new Map(),
+      buttonEl: null,
+      menuEl: null,
+      layerEl: null,
+      styleEl: null,
+      observer: null
+    };
+
+    function init() {
+      if (state.initialized) return;
+      state.initialized = true;
+
+      ensureStyles();
+      ensureElements();
+
+      document.addEventListener("scroll", scheduleRender, true);
+      document.addEventListener("pointerdown", onPointerDown, true);
+      document.addEventListener("keydown", onKeyDown, true);
+      document.addEventListener("input", onInput, true);
+      window.addEventListener("resize", scheduleRender);
+
+      state.observer = new MutationObserver(() => scheduleRender());
+      state.observer.observe(document.body, { childList: true, subtree: true });
+
+      scheduleRender();
+    }
+
+    function getStatus() {
+      if (!state.active) {
+        return { active: false, selectedCount: 0 };
+      }
+
+      syncSelectionWithTurns(buildChatGptTurns());
+      return { active: true, selectedCount: state.selectedIds.size };
+    }
+
+    function filterTurns(turns) {
+      if (!state.active) return turns;
+      syncSelectionWithTurns(turns);
+      return turns.filter((turn) => state.selectedIds.has(turn.id));
+    }
+
+    function ensureStyles() {
+      if (state.styleEl) return;
+
+      const styleEl = document.createElement("style");
+      styleEl.dataset.chatExporterChatgptSelectionStyle = "1";
+      styleEl.textContent = `
+        .chat-exporter-select-trigger {
+          position: fixed;
+          z-index: 2147483644;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 32px;
+          padding: 0 12px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 999px;
+          background: rgba(32, 33, 35, 0.94);
+          color: #fff;
+          font: 600 13px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+          backdrop-filter: blur(8px);
+          cursor: pointer;
+        }
+        .chat-exporter-select-trigger:hover {
+          background: rgba(48, 49, 52, 0.98);
+        }
+        .chat-exporter-select-trigger[data-active="1"] {
+          background: #1d4ed8;
+          border-color: rgba(147, 197, 253, 0.95);
+        }
+        .chat-exporter-select-trigger[data-active="1"]:hover {
+          background: #1e40af;
+        }
+        .chat-exporter-select-menu {
+          position: fixed;
+          z-index: 2147483645;
+          display: flex;
+          flex-direction: column;
+          min-width: 160px;
+          padding: 6px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 14px;
+          background: rgba(24, 24, 27, 0.98);
+          box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+          backdrop-filter: blur(10px);
+        }
+        .chat-exporter-select-menu button {
+          appearance: none;
+          border: 0;
+          background: transparent;
+          color: #f8fafc;
+          text-align: left;
+          padding: 10px 12px;
+          border-radius: 10px;
+          font: 500 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          cursor: pointer;
+        }
+        .chat-exporter-select-menu button:hover {
+          background: rgba(255, 255, 255, 0.08);
+        }
+        .chat-exporter-selection-layer {
+          position: fixed;
+          inset: 0;
+          z-index: 2147483643;
+          pointer-events: none;
+        }
+        .chat-exporter-turn-checkbox {
+          position: fixed;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 24px;
+          height: 24px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 999px;
+          background: rgba(17, 24, 39, 0.88);
+          box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+          pointer-events: auto;
+        }
+        .chat-exporter-turn-checkbox input {
+          width: 15px;
+          height: 15px;
+          margin: 0;
+          accent-color: #2563eb;
+          cursor: pointer;
+        }
+        .chat-exporter-sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+      `;
+
+      document.head.appendChild(styleEl);
+      state.styleEl = styleEl;
+    }
+
+    function ensureElements() {
+      if (!state.buttonEl) {
+        const buttonEl = document.createElement("button");
+        buttonEl.type = "button";
+        buttonEl.className = "chat-exporter-select-trigger";
+        buttonEl.textContent = "Select";
+        buttonEl.hidden = true;
+        buttonEl.addEventListener(
+          "click",
+          (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            state.menuOpen = !state.menuOpen;
+            scheduleRender();
+          },
+          true
+        );
+        document.body.appendChild(buttonEl);
+        state.buttonEl = buttonEl;
+      }
+
+      if (!state.menuEl) {
+        const menuEl = document.createElement("div");
+        menuEl.className = "chat-exporter-select-menu";
+        menuEl.hidden = true;
+        menuEl.innerHTML = `
+          <button type="button" data-action="all">Select all</button>
+          <button type="button" data-action="none">Select none</button>
+          <button type="button" data-action="last-reply">Select last reply</button>
+          <button type="button" data-action="cancel">Cancel</button>
+        `;
+        menuEl.addEventListener(
+          "click",
+          (event) => {
+            const action = event.target?.closest?.("button")?.dataset?.action || "";
+            if (!action) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (action === "all") {
+              activate(true);
+              return;
+            }
+
+            if (action === "none") {
+              activate(false);
+              return;
+            }
+
+            if (action === "last-reply") {
+              activateLastReply();
+              return;
+            }
+
+            if (action === "cancel") {
+              if (state.active) {
+                deactivate();
+              } else {
+                closeMenu();
+              }
+            }
+          },
+          true
+        );
+        document.body.appendChild(menuEl);
+        state.menuEl = menuEl;
+      }
+
+      if (!state.layerEl) {
+        const layerEl = document.createElement("div");
+        layerEl.className = "chat-exporter-selection-layer";
+        layerEl.hidden = true;
+        document.body.appendChild(layerEl);
+        state.layerEl = layerEl;
+      }
+    }
+
+    function activate(selectAll) {
+      state.active = true;
+      state.defaultChecked = Boolean(selectAll);
+      state.knownIds.clear();
+      state.selectedIds.clear();
+      syncSelectionWithTurns(buildChatGptTurns());
+      closeMenu();
+      scheduleRender();
+    }
+
+    function activateLastReply() {
+      const turns = buildChatGptTurns();
+      const currentIds = new Set(
+        turns
+          .map((turn) => turn?.id)
+          .filter(Boolean)
+      );
+      const lastAssistantTurn = turns
+        .slice()
+        .reverse()
+        .find((turn) => turn?.role === "assistant");
+
+      state.active = true;
+      state.defaultChecked = false;
+      state.knownIds = currentIds;
+      state.selectedIds.clear();
+
+      if (lastAssistantTurn?.id) {
+        state.selectedIds.add(lastAssistantTurn.id);
+      }
+
+      closeMenu();
+      scheduleRender();
+    }
+
+    function deactivate() {
+      state.active = false;
+      state.defaultChecked = true;
+      state.knownIds.clear();
+      state.selectedIds.clear();
+      closeMenu();
+      scheduleRender();
+    }
+
+    function closeMenu() {
+      if (!state.menuOpen) return;
+      state.menuOpen = false;
+      scheduleRender();
+    }
+
+    function syncSelectionWithTurns(turns) {
+      if (!state.active) return;
+
+      const currentIds = new Set(
+        turns
+          .map((turn) => turn?.id)
+          .filter(Boolean)
+      );
+
+      for (const id of currentIds) {
+        if (!state.knownIds.has(id) && state.defaultChecked) {
+          state.selectedIds.add(id);
+        }
+      }
+
+      for (const id of Array.from(state.selectedIds)) {
+        if (!currentIds.has(id)) {
+          state.selectedIds.delete(id);
+        }
+      }
+
+      state.knownIds = currentIds;
+    }
+
+    function onPointerDown(event) {
+      const target = event.target;
+      if (state.menuEl?.contains(target) || state.buttonEl?.contains(target)) return;
+      if (!state.menuOpen) return;
+      closeMenu();
+    }
+
+    function onKeyDown(event) {
+      if (event.key !== "Escape" || !state.menuOpen) return;
+      closeMenu();
+    }
+
+    function onInput(event) {
+      const target = event.target;
+      if (!target) return;
+      if (target.id === "prompt-textarea" || target.getAttribute?.("name") === "prompt-textarea") {
+        scheduleRender();
+      }
+    }
+
+    function scheduleRender() {
+      if (state.rafId) return;
+      state.rafId = window.requestAnimationFrame(render);
+    }
+
+    function render() {
+      state.rafId = 0;
+      ensureElements();
+
+      const turns = buildChatGptTurns();
+      if (state.active) {
+        syncSelectionWithTurns(turns);
+      }
+
+      renderButton(turns);
+      renderMenu();
+      renderCheckboxes(turns);
+    }
+
+    function renderButton(turns) {
+      const buttonEl = state.buttonEl;
+      const anchorEl = findChatGptComposerAnchor();
+      const hasConversation = turns.length > 0;
+
+      if (!buttonEl || !anchorEl || !hasConversation) {
+        if (buttonEl) buttonEl.hidden = true;
+        if (state.menuEl) state.menuEl.hidden = true;
+        return;
+      }
+
+      const rect = anchorEl.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        buttonEl.hidden = true;
+        if (state.menuEl) state.menuEl.hidden = true;
+        return;
+      }
+
+      buttonEl.hidden = false;
+      buttonEl.dataset.active = state.active ? "1" : "0";
+      buttonEl.setAttribute("aria-pressed", state.active ? "true" : "false");
+
+      const buttonRect = buttonEl.getBoundingClientRect();
+      const buttonWidth = Math.max(72, Math.round(buttonRect.width || 72));
+      const buttonHeight = Math.max(32, Math.round(buttonRect.height || 32));
+      const viewportWidth = getViewportWidth();
+      const left = clamp(Math.round(rect.right + 16), 12, viewportWidth - buttonWidth - 12);
+      const top = clamp(
+        Math.round(rect.top + Math.max(0, (rect.height - buttonHeight) / 2)),
+        12,
+        window.innerHeight - buttonHeight - 12
+      );
+
+      buttonEl.style.left = `${left}px`;
+      buttonEl.style.top = `${top}px`;
+    }
+
+    function renderMenu() {
+      const menuEl = state.menuEl;
+      const buttonEl = state.buttonEl;
+      if (!menuEl || !buttonEl || buttonEl.hidden || !state.menuOpen) {
+        if (menuEl) menuEl.hidden = true;
+        return;
+      }
+
+      menuEl.hidden = false;
+
+      const buttonRect = buttonEl.getBoundingClientRect();
+      const menuRect = menuEl.getBoundingClientRect();
+      const menuWidth = Math.max(160, Math.round(menuRect.width || 160));
+      const menuHeight = Math.max(120, Math.round(menuRect.height || 120));
+      const viewportWidth = getViewportWidth();
+      const left = clamp(Math.round(buttonRect.left), 12, viewportWidth - menuWidth - 12);
+
+      let top = Math.round(buttonRect.bottom + 8);
+      if (top + menuHeight > window.innerHeight - 12) {
+        top = Math.round(buttonRect.top - menuHeight - 8);
+      }
+
+      menuEl.style.left = `${left}px`;
+      menuEl.style.top = `${clamp(top, 12, window.innerHeight - menuHeight - 12)}px`;
+    }
+
+    function renderCheckboxes(turns) {
+      const layerEl = state.layerEl;
+      if (!layerEl || !state.active || turns.length === 0) {
+        if (layerEl) layerEl.hidden = true;
+        clearCheckboxes();
+        return;
+      }
+
+      layerEl.hidden = false;
+      const liveIds = new Set();
+
+      for (const turn of turns) {
+        const anchorEl = turn?.checkboxAnchorEl || turn?.anchorEl || null;
+        if (!turn?.id || !anchorEl) continue;
+        liveIds.add(turn.id);
+
+        let wrapperEl = state.checkboxEls.get(turn.id);
+        if (!wrapperEl) {
+          wrapperEl = createCheckbox(turn.id, turn.role);
+          state.checkboxEls.set(turn.id, wrapperEl);
+          layerEl.appendChild(wrapperEl);
+        }
+
+        const rect = anchorEl.getBoundingClientRect();
+        if (!isCheckboxAnchorVisible(rect)) {
+          wrapperEl.hidden = true;
+          continue;
+        }
+
+        const viewportWidth = getViewportWidth();
+        const left = clamp(Math.round(rect.right + 10), 8, viewportWidth - 28);
+        const top = clamp(Math.round(rect.top + 12), 8, window.innerHeight - 28);
+
+        const inputEl = wrapperEl.querySelector("input");
+        inputEl.checked = state.selectedIds.has(turn.id);
+        wrapperEl.style.left = `${left}px`;
+        wrapperEl.style.top = `${top}px`;
+        wrapperEl.hidden = false;
+      }
+
+      for (const [turnId, wrapperEl] of Array.from(state.checkboxEls.entries())) {
+        if (liveIds.has(turnId)) continue;
+        wrapperEl.remove();
+        state.checkboxEls.delete(turnId);
+      }
+    }
+
+    function clearCheckboxes() {
+      for (const wrapperEl of state.checkboxEls.values()) {
+        wrapperEl.remove();
+      }
+      state.checkboxEls.clear();
+    }
+
+    function createCheckbox(turnId, role) {
+      const wrapperEl = document.createElement("label");
+      wrapperEl.className = "chat-exporter-turn-checkbox";
+      wrapperEl.hidden = true;
+      wrapperEl.addEventListener(
+        "pointerdown",
+        (event) => {
+          event.stopPropagation();
+        },
+        true
+      );
+      wrapperEl.addEventListener(
+        "click",
+        (event) => {
+          event.stopPropagation();
+        },
+        true
+      );
+
+      const inputEl = document.createElement("input");
+      inputEl.type = "checkbox";
+      inputEl.setAttribute("aria-label", role === "user" ? "Select user message" : "Select assistant message");
+      inputEl.addEventListener(
+        "click",
+        (event) => {
+          event.stopPropagation();
+        },
+        true
+      );
+      inputEl.addEventListener(
+        "change",
+        () => {
+          if (inputEl.checked) {
+            state.selectedIds.add(turnId);
+          } else {
+            state.selectedIds.delete(turnId);
+          }
+        },
+        true
+      );
+
+      const srOnlyEl = document.createElement("span");
+      srOnlyEl.className = "chat-exporter-sr-only";
+      srOnlyEl.textContent = role === "user" ? "Select user message" : "Select assistant message";
+
+      wrapperEl.appendChild(inputEl);
+      wrapperEl.appendChild(srOnlyEl);
+      return wrapperEl;
+    }
+
+    return {
+      init,
+      getStatus,
+      filterTurns
+    };
+  }
+
+  function findChatGptComposerAnchor() {
+    const promptEl = document.getElementById("prompt-textarea");
+    const promptContainer =
+      promptEl?.closest?.('[data-composer-surface="true"]') ||
+      document.querySelector('[data-composer-surface="true"]');
+
+    if (promptContainer) return promptContainer;
+
+    return (
+      document.querySelector('[data-testid="composer-footer-actions"]')?.parentElement ||
+      document.querySelector('textarea[name="prompt-textarea"]')?.closest("form, [role='group'], [role='presentation']") ||
+      document.querySelector("form")
+    );
+  }
+
+  function isVisibleRect(rect) {
+    return rect.bottom >= 0 && rect.top <= window.innerHeight && rect.width > 0 && rect.height > 0;
+  }
+
+  function isCheckboxAnchorVisible(rect) {
+    return (
+      isVisibleRect(rect) &&
+      rect.top >= 0 &&
+      rect.top <= window.innerHeight - 8
+    );
+  }
+
+  function getViewportWidth() {
+    return document.documentElement?.clientWidth || window.innerWidth;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function getUserCheckboxAnchor(containerEl, userMsgs) {
+    for (const msgEl of userMsgs || []) {
+      const bubbleEl = msgEl.querySelector(".user-message-bubble-color");
+      if (bubbleEl) return bubbleEl;
+
+      const textEl = msgEl.querySelector(".whitespace-pre-wrap");
+      if (textEl?.parentElement) return textEl.parentElement;
+
+      const imageEl = Array.from(msgEl.querySelectorAll("img")).find(ns.isLikelyContentImage);
+      if (imageEl?.parentElement) return imageEl.parentElement;
+    }
+
+    return getConversationColumnAnchor(containerEl) || userMsgs?.[0] || containerEl;
+  }
+
+  function getAssistantCheckboxAnchor(containerEl, assistantMsgs) {
+    for (const msgEl of assistantMsgs || []) {
+      const markdownEl = msgEl.querySelector(".markdown");
+      if (markdownEl) return markdownEl;
+
+      const contentEl =
+        msgEl.querySelector("pre") ||
+        Array.from(msgEl.querySelectorAll("img")).find(ns.isLikelyContentImage) ||
+        msgEl.firstElementChild;
+
+      if (contentEl) return contentEl;
+    }
+
+    return getConversationColumnAnchor(containerEl) || assistantMsgs?.[0] || containerEl;
+  }
+
+  function getConversationColumnAnchor(containerEl) {
+    if (!containerEl) return null;
+
+    return (
+      containerEl.querySelector(".group\\/turn-messages") ||
+      containerEl.querySelector('[class*="group/turn-messages"]') ||
+      containerEl.querySelector('[class*="thread-content-max-width"]') ||
+      containerEl.querySelector(".text-base > div") ||
+      containerEl
+    );
   }
 
   function isConversationHref(href) {
