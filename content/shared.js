@@ -154,18 +154,19 @@
 
     const menuItems = Array.from(
       menuEl.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"]')
-    );
+    ).filter((item) => item.closest?.('[role="menu"]') === menuEl);
     if (menuItems.length === 0) return;
 
-    const shareItem =
+    if (isLikelyConversationMenu && !isLikelyConversationMenu(menuItems)) return;
+
+    const templateItem =
       menuItems.find((el) => normalizeTextTrim(el.textContent).toLowerCase() === "share") ||
       menuItems.find((el) => normalizeTextTrim(el.textContent).toLowerCase().startsWith("share")) ||
       menuItems[0];
 
-    if (!shareItem) return;
-    if (isLikelyConversationMenu && !isLikelyConversationMenu(menuItems)) return;
+    if (!templateItem) return;
 
-    const downloadItem = shareItem.cloneNode(true);
+    const downloadItem = templateItem.cloneNode(true);
     downloadItem.dataset.chatExporterItem = "1";
 
     const setHighlighted = (on) => {
@@ -222,7 +223,7 @@
       true
     );
 
-    shareItem.insertAdjacentElement("afterend", downloadItem);
+    templateItem.insertAdjacentElement("afterend", downloadItem);
     menuEl.dataset.chatExporterInjected = "1";
   }
 

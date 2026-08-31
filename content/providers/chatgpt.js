@@ -3,25 +3,70 @@
   const { compareDomOrder, normalizeTextTrim, wrapCollapsibleSection } = ns.helpers;
 
   const selectionController = createSelectionController();
+  const extractionState = {
+    conversationId: "",
+    canonicalTurns: null,
+    fallbackContainers: null,
+    fallbackCoverageVerified: false,
+    title: "",
+    apiError: ""
+  };
 
   const provider = {
     id: "chatgpt",
     name: "ChatGPT",
 
-    hasConversation() {
-      return getConversationTurnContainers().length > 0;
+    hasConversation(options = {}) {
+      const targetConversationId = ns.chatGptData.getConversationId(
+        options.conversationUrl || location.href
+      );
+      const preparedForCurrentConversation =
+        extractionState.conversationId === targetConversationId;
+      return Boolean(
+        (preparedForCurrentConversation && extractionState.canonicalTurns?.length) ||
+        (preparedForCurrentConversation && extractionState.fallbackContainers?.length) ||
+        getConversationTurnContainers().length
+      );
     },
 
-    getTitle() {
-      return document.title || "ChatGPT Conversation";
+    getTitle(options = {}) {
+      const targetConversationId = ns.chatGptData.getConversationId(
+        options.conversationUrl || location.href
+      );
+      const preparedForCurrentConversation =
+        extractionState.conversationId === targetConversationId;
+      return (preparedForCurrentConversation && extractionState.title) || document.title || "ChatGPT Conversation";
     },
 
     getSelectionStatus() {
       return selectionController.getStatus();
     },
 
-    getTurns() {
-      const turns = buildChatGptTurns();
+    async prepareForExtraction(options = {}) {
+      await prepareChatGptExtraction(options);
+    },
+
+    getTurns(options = {}) {
+      const liveTurns = buildChatGptTurns();
+      const preparedDomTurns = extractionState.fallbackContainers?.length
+        ? extractionState.fallbackContainers.flatMap((container) => buildTurnsForContainer(container))
+        : liveTurns;
+      let turns = liveTurns;
+      const targetConversationId = ns.chatGptData.getConversationId(
+        options.conversationUrl || location.href
+      );
+      const preparedForCurrentConversation =
+        extractionState.conversationId === targetConversationId;
+
+      if (preparedForCurrentConversation && extractionState.canonicalTurns?.length) {
+        turns = extractionState.fallbackCoverageVerified &&
+          preparedDomTurns.length > extractionState.canonicalTurns.length
+          ? preparedDomTurns
+          : mergeCanonicalAndDomTurns(extractionState.canonicalTurns, preparedDomTurns);
+      } else if (preparedForCurrentConversation && extractionState.fallbackContainers?.length) {
+        turns = preparedDomTurns;
+      }
+
       return selectionController.filterTurns(turns);
     },
 
@@ -47,20 +92,26 @@
           for (const node of Array.from(mutation.addedNodes || [])) {
             if (!node || node.nodeType !== Node.ELEMENT_NODE) continue;
             const el = node;
+            const menus = new Set();
 
             if (el.getAttribute?.("role") === "menu") {
-              ns.menuUtils.injectDownloadIntoMenu({
-                menuEl: el,
-                getSelection: () => lastSidebarSelection,
-                isLikelyConversationMenu,
-                onDownloadClick
-              });
+              menus.add(el);
             }
 
+            const parentMenu = el.closest?.('[role="menu"]');
+            if (parentMenu) menus.add(parentMenu);
+
             for (const menu of Array.from(el.querySelectorAll?.('[role="menu"]') || [])) {
+              menus.add(menu);
+            }
+
+            for (const menu of menus) {
               ns.menuUtils.injectDownloadIntoMenu({
                 menuEl: menu,
-                getSelection: () => lastSidebarSelection,
+                getSelection: () =>
+                  getSidebarSelectionFromMenu(menu) ||
+                  getCurrentConversationSelection() ||
+                  lastSidebarSelection,
                 isLikelyConversationMenu,
                 onDownloadClick
               });
@@ -81,6 +132,320 @@
       document.querySelector('[role="main"]') ||
       document.body
     );
+  }
+
+  async function prepareChatGptExtraction(options = {}) {
+    const conversationUrl = options.conversationUrl || location.href;
+    extractionState.conversationId = ns.chatGptData.getConversationId(conversationUrl);
+    extractionState.canonicalTurns = null;
+    extractionState.fallbackContainers = null;
+    extractionState.fallbackCoverageVerified = false;
+    extractionState.title = "";
+    extractionState.apiError = "";
+
+    const targetsCurrentDocument =
+      extractionState.conversationId === ns.chatGptData.getConversationId(location.href);
+    if (targetsCurrentDocument) {
+      extractionState.fallbackContainers = getConversationTurnContainers()
+        .map((container) => container.cloneNode(true));
+    } else {
+      extractionState.fallbackContainers = [];
+    }
+
+    const payloadResult = await ns.chatGptData.fetchConversationPayload(conversationUrl)
+      .then((payload) => ({ payload, error: null }))
+      .catch((error) => ({ payload: null, error }));
+    const payload = payloadResult.payload;
+    extractionState.title = normalizeTextTrim(payload?.title);
+    extractionState.apiError = String(
+      payloadResult.error?.message || payloadResult.error || ""
+    );
+
+    const descriptors = payload && ns.chatGptData.isActiveBranchComplete(payload)
+      ? ns.chatGptData.buildTurnDescriptors(payload)
+      : [];
+    if (descriptors.length > 0) {
+      extractionState.canonicalTurns = descriptors.map(createCanonicalTurn);
+    }
+
+    if (payload?.__chatExporterCoverageComplete && descriptors.length > 0) {
+      return;
+    }
+
+    if (!targetsCurrentDocument) {
+      throw new Error(
+        "ChatGPT API coverage could not be verified. Open the conversation and export it directly to use the DOM fallback."
+      );
+    }
+
+    let domError = null;
+    if (document.visibilityState !== "hidden") {
+      try {
+        extractionState.fallbackContainers = await collectVirtualizedTurnContainers();
+        extractionState.fallbackCoverageVerified = true;
+      } catch (error) {
+        domError = error;
+      }
+    }
+
+    if (extractionState.fallbackCoverageVerified && extractionState.fallbackContainers?.length) {
+      return;
+    }
+
+    const domMessage = String(domError?.message || domError || "DOM collection failed.");
+    const apiMessage = payload
+      ? "ChatGPT API coverage could not be verified."
+      : extractionState.apiError || "Canonical data was unavailable.";
+    throw new Error(`${domMessage} ${apiMessage}`.trim());
+  }
+
+  function createCanonicalTurn(descriptor) {
+    return {
+      id: descriptor.id,
+      role: descriptor.role,
+      canonicalTurnId: descriptor.turnKey || "",
+      sourceMessageIds: descriptor.messageIds || [],
+      anchorEl: null,
+      checkboxAnchorEl: null,
+      toMarkdown(converter) {
+        return ns.chatGptData.renderTurnDescriptor(descriptor, converter);
+      }
+    };
+  }
+
+  function mergeCanonicalAndDomTurns(canonicalTurns, domTurns) {
+    const domByTurnId = new Map();
+    const domByMessageId = new Map();
+
+    for (const turn of domTurns) {
+      if (turn.canonicalTurnId) domByTurnId.set(turn.canonicalTurnId, turn);
+      for (const messageId of turn.sourceMessageIds || []) {
+        if (messageId) domByMessageId.set(messageId, turn);
+      }
+    }
+
+    return canonicalTurns.map((canonicalTurn) => {
+      let domTurn = canonicalTurn.canonicalTurnId
+        ? domByTurnId.get(canonicalTurn.canonicalTurnId)
+        : null;
+
+      if (!domTurn) {
+        domTurn = (canonicalTurn.sourceMessageIds || [])
+          .map((messageId) => domByMessageId.get(messageId))
+          .find(Boolean);
+      }
+
+      if (!domTurn) return canonicalTurn;
+      return {
+        ...domTurn,
+        id: canonicalTurn.id,
+        canonicalTurnId: canonicalTurn.canonicalTurnId,
+        sourceMessageIds: canonicalTurn.sourceMessageIds
+      };
+    });
+  }
+
+  function findConversationScroller() {
+    let current = getConversationTurnContainers()[0] || document.querySelector("#thread");
+
+    while (current) {
+      const style = getComputedStyle(current);
+      if (current.scrollHeight > current.clientHeight + 100 && /(auto|scroll)/.test(style.overflowY)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function settleVirtualizedDom(ms = 300) {
+    await Promise.race([
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      wait(250)
+    ]);
+    await wait(ms);
+  }
+
+  function getTurnIndex(container) {
+    const testId = container?.getAttribute?.("data-testid") || "";
+    return Number(testId.match(/^conversation-turn-(\d+)$/)?.[1] || 0);
+  }
+
+  function getTurnSnapshotKey(container) {
+    const turnId = String(container?.getAttribute?.("data-turn-id") || "").trim();
+    if (turnId) return `turn:${turnId}`;
+
+    const messageIds = Array.from(container?.querySelectorAll?.("[data-message-id]") || [])
+      .map((message) => String(message.getAttribute("data-message-id") || "").trim())
+      .filter(Boolean);
+    if (messageIds.length > 0) return `messages:${Array.from(new Set(messageIds)).join("|")}`;
+
+    const testId = String(container?.getAttribute?.("data-testid") || "").trim();
+    return testId ? `test:${testId}` : "";
+  }
+
+  function createTurnSnapshotStore() {
+    const records = new Map();
+    const finalIndexToKey = new Map();
+    let sequence = 0;
+
+    function capture({ final = false } = {}) {
+      for (const container of getConversationTurnContainers()) {
+        const key = getTurnSnapshotKey(container);
+        if (!key) continue;
+
+        const index = getTurnIndex(container);
+        const existing = records.get(key);
+        const record = existing || { key, firstSeen: sequence++, finalIndex: 0, clone: null };
+        record.clone = container.cloneNode(true);
+
+        if (final && index) {
+          if (record.finalIndex && record.finalIndex !== index && finalIndexToKey.get(record.finalIndex) === key) {
+            finalIndexToKey.delete(record.finalIndex);
+          }
+          record.finalIndex = index;
+          finalIndexToKey.set(index, key);
+        }
+
+        records.set(key, record);
+      }
+    }
+
+    function beginFinalIndexing() {
+      finalIndexToKey.clear();
+      for (const record of records.values()) record.finalIndex = 0;
+    }
+
+    function hasCompleteCoverage(expectedCount) {
+      if (!expectedCount) return records.size > 0;
+      for (let index = 1; index <= expectedCount; index += 1) {
+        if (!finalIndexToKey.has(index)) return false;
+      }
+      return true;
+    }
+
+    function getOrderedContainers(expectedCount) {
+      if (expectedCount > 0 && !hasCompleteCoverage(expectedCount)) {
+        const missing = [];
+        for (let index = 1; index <= expectedCount; index += 1) {
+          if (!finalIndexToKey.has(index)) missing.push(index);
+        }
+        throw new Error(
+          `ChatGPT did not render conversation turn indexes: ${missing.slice(0, 20).join(", ")}${missing.length > 20 ? ", ..." : ""}.`
+        );
+      }
+
+      if (expectedCount > 0) {
+        return Array.from({ length: expectedCount }, (_, offset) => {
+          const key = finalIndexToKey.get(offset + 1);
+          return records.get(key)?.clone || null;
+        }).filter(Boolean);
+      }
+
+      return Array.from(records.values())
+        .sort((a, b) => a.firstSeen - b.firstSeen)
+        .map((record) => record.clone)
+        .filter(Boolean);
+    }
+
+    return { beginFinalIndexing, capture, getOrderedContainers, hasCompleteCoverage };
+  }
+
+  async function loadConversationBeginning(scroller, snapshots) {
+    let stableAtTop = 0;
+    let lastSignature = "";
+
+    snapshots.capture();
+
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      scroller.scrollTop = 0;
+      await settleVirtualizedDom(350);
+      snapshots.capture();
+
+      const containers = getConversationTurnContainers();
+      const indexes = containers.map(getTurnIndex).filter(Boolean);
+      const firstIndex = indexes.length ? Math.min(...indexes) : 0;
+      const signature = [
+        containers[0]?.getAttribute?.("data-turn-id") || "",
+        Math.round(scroller.scrollHeight),
+        Math.max(0, ...indexes)
+      ].join(":");
+
+      if (scroller.scrollTop <= 1 && firstIndex === 1 && signature === lastSignature) {
+        stableAtTop += 1;
+        if (stableAtTop >= 2) return;
+      } else {
+        stableAtTop = 0;
+      }
+
+      lastSignature = signature;
+    }
+
+    throw new Error("ChatGPT history did not finish loading at the beginning.");
+  }
+
+  async function sweepVirtualizedConversation(scroller, snapshots) {
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    await settleVirtualizedDom(180);
+    snapshots.capture();
+
+    const bottomIndexes = getConversationTurnContainers().map(getTurnIndex).filter(Boolean);
+    let expectedCount = bottomIndexes.length ? Math.max(...bottomIndexes) : 0;
+    snapshots.beginFinalIndexing();
+
+    for (const stepRatio of [0.75, 0.4]) {
+      const step = Math.max(240, Math.floor(scroller.clientHeight * stepRatio));
+      let position = 0;
+      let attempts = 0;
+
+      while (attempts < 4000) {
+        const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        scroller.scrollTop = Math.min(position, maxScrollTop);
+        await settleVirtualizedDom(90);
+        snapshots.capture({ final: true });
+
+        const renderedIndexes = getConversationTurnContainers().map(getTurnIndex).filter(Boolean);
+        expectedCount = Math.max(expectedCount, ...renderedIndexes, 0);
+
+        if (snapshots.hasCompleteCoverage(expectedCount)) break;
+        if (position >= maxScrollTop) break;
+
+        position = Math.min(position + step, maxScrollTop);
+        attempts += 1;
+      }
+
+      if (snapshots.hasCompleteCoverage(expectedCount)) break;
+    }
+
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    await settleVirtualizedDom(180);
+    snapshots.capture({ final: true });
+
+    return snapshots.getOrderedContainers(expectedCount);
+  }
+
+  async function collectVirtualizedTurnContainers() {
+    const scroller = findConversationScroller();
+    if (!scroller) {
+      return getConversationTurnContainers().map((container) => container.cloneNode(true));
+    }
+
+    const bottomOffset = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
+    const snapshots = createTurnSnapshotStore();
+    snapshots.capture();
+
+    try {
+      await loadConversationBeginning(scroller, snapshots);
+      return await sweepVirtualizedConversation(scroller, snapshots);
+    } finally {
+      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - bottomOffset);
+      await settleVirtualizedDom(0);
+    }
   }
 
   function buildChatGptTurns(root = findConversationRoot()) {
@@ -149,10 +514,13 @@
     const stableAnchor = anchorEl || userMsgs[0] || null;
     const turnId = makeTurnId("user", stableAnchor, userMsgs);
     const checkboxAnchorEl = getUserCheckboxAnchor(stableAnchor, userMsgs);
+    const sourceMessageIds = getSourceMessageIds(userMsgs);
 
     return {
       id: turnId,
       role: "user",
+      canonicalTurnId: stableAnchor?.getAttribute?.("data-turn-id") || "",
+      sourceMessageIds,
       anchorEl: stableAnchor,
       checkboxAnchorEl,
       toMarkdown(converter) {
@@ -179,10 +547,13 @@
     const stableAnchor = containerEl || assistantMsgs[0] || null;
     const turnId = makeTurnId("assistant", stableAnchor, assistantMsgs);
     const checkboxAnchorEl = getAssistantCheckboxAnchor(stableAnchor, assistantMsgs);
+    const sourceMessageIds = getSourceMessageIds(assistantMsgs);
 
     return {
       id: turnId,
       role: "assistant",
+      canonicalTurnId: stableAnchor?.getAttribute?.("data-turn-id") || "",
+      sourceMessageIds,
       anchorEl: stableAnchor,
       checkboxAnchorEl,
       toMarkdown(converter) {
@@ -353,12 +724,24 @@
     return {
       id: makeTurnId(role, msgEl, [msgEl]),
       role,
+      canonicalTurnId: msgEl.getAttribute("data-turn-id") || "",
+      sourceMessageIds: getSourceMessageIds([msgEl]),
       anchorEl: msgEl,
       checkboxAnchorEl: msgEl,
       toMarkdown(converter) {
         return converter.convertElement(msgEl).trim();
       }
     };
+  }
+
+  function getSourceMessageIds(messageEls) {
+    return Array.from(
+      new Set(
+        (messageEls || [])
+          .map((el) => String(el?.getAttribute?.("data-message-id") || "").trim())
+          .filter(Boolean)
+      )
+    );
   }
 
   function makeTurnId(role, anchorEl, messageEls) {
@@ -1019,30 +1402,120 @@
     const el = target?.nodeType === Node.ELEMENT_NODE ? target : null;
     if (!el) return null;
 
-    const anchor =
-      el.closest('a[href*="/c/"]') ||
-      el.closest("button")?.closest("a") ||
-      el.closest("li")?.querySelector?.('a[href*="/c/"]') ||
-      null;
+    const optionsButton = el.closest('button[aria-label*="conversation options" i]') || el.closest("button");
+    const anchor = findConversationAnchorNearElement(el, optionsButton);
 
     const href = anchor?.getAttribute?.("href") || anchor?.href || "";
     if (!href || !isConversationHref(href)) return null;
 
     const url = new URL(href, location.origin).toString();
     const title =
+      getConversationTitleFromOptionsButton(optionsButton) ||
       normalizeTextTrim(anchor?.getAttribute?.("title")) ||
-      normalizeTextTrim(anchor?.textContent) ||
+      getConversationTitleFromAnchor(anchor) ||
       "ChatGPT Conversation";
 
     return { providerName: provider.name, title, url };
   }
 
-  function isLikelyConversationMenu(menuItems) {
-    const isLikelyChatMenu =
-      menuItems.some((el) => normalizeTextTrim(el.textContent).toLowerCase().includes("rename")) ||
-      menuItems.some((el) => normalizeTextTrim(el.textContent).toLowerCase().includes("delete"));
+  function getSidebarSelectionFromMenu(menu) {
+    const menuLabel = normalizeTextTrim(menu?.getAttribute?.("aria-label"));
+    const expandedButtons = Array.from(
+      document.querySelectorAll('button[aria-expanded="true"][aria-label*="conversation options" i]')
+    );
+    const labeledButtons = Array.from(
+      document.querySelectorAll('button[aria-label*="conversation options" i]')
+    );
 
-    return isLikelyChatMenu;
+    const button =
+      (menuLabel && labeledButtons.find((candidate) =>
+        normalizeTextTrim(candidate.getAttribute("aria-label")) === menuLabel
+      )) ||
+      expandedButtons.find((candidate) => getSidebarSelectionFromEventTarget(candidate)) ||
+      null;
+
+    return getSidebarSelectionFromEventTarget(button);
+  }
+
+  function getCurrentConversationSelection() {
+    const conversationId = ns.chatGptData.getConversationId(location.href);
+    if (!conversationId) return null;
+
+    const conversationAnchor = Array.from(document.querySelectorAll('a[href*="/c/"]'))
+      .find((anchor) =>
+        ns.chatGptData.getConversationId(anchor.getAttribute("href") || anchor.href || "") ===
+        conversationId
+      );
+    const projectName = normalizeTextTrim(
+      document.querySelector('a[aria-label^="Open "][aria-label$=" project"]')?.textContent
+    );
+    const documentTitle = normalizeTextTrim(document.title);
+    const titleWithoutProject = projectName && documentTitle.startsWith(`${projectName} - `)
+      ? documentTitle.slice(projectName.length + 3).trim()
+      : documentTitle;
+    const title =
+      getConversationTitleFromAnchor(conversationAnchor) ||
+      titleWithoutProject ||
+      "ChatGPT Conversation";
+
+    return {
+      providerName: provider.name,
+      title,
+      url: location.href
+    };
+  }
+
+  function findConversationAnchorNearElement(el, optionsButton) {
+    const directAnchor = el.closest('a[href*="/c/"]') || optionsButton?.closest?.('a[href*="/c/"]');
+    if (directAnchor) return directAnchor;
+
+    let current = optionsButton?.parentElement || el.parentElement;
+    for (let depth = 0; current && depth < 7; depth += 1) {
+      const anchors = Array.from(current.querySelectorAll?.('a[href*="/c/"]') || [])
+        .filter((anchor) => isConversationHref(anchor.getAttribute("href") || anchor.href || ""));
+      if (anchors.length === 1) return anchors[0];
+      if (current.matches?.("main, nav, aside")) break;
+      current = current.parentElement;
+    }
+
+    return el.closest("li")?.querySelector?.('a[href*="/c/"]') || null;
+  }
+
+  function getConversationTitleFromOptionsButton(button) {
+    const ariaLabel = normalizeTextTrim(button?.getAttribute?.("aria-label"));
+    if (!ariaLabel) return "";
+
+    const match = ariaLabel.match(/^Open conversation options for\s+(.+)$/i);
+    return normalizeTextTrim(match?.[1]);
+  }
+
+  function getConversationTitleFromAnchor(anchor) {
+    const ariaLabel = normalizeTextTrim(anchor?.getAttribute?.("aria-label"));
+    if (ariaLabel) {
+      const sidebarTitle = ariaLabel
+        .replace(/,\s*chat in project\b.*$/i, "")
+        .replace(/,\s*unread\s*$/i, "");
+      if (sidebarTitle) return normalizeTextTrim(sidebarTitle);
+    }
+
+    const semanticTitle = anchor?.querySelector?.(
+      'h1, h2, h3, h4, [data-testid*="title" i], [class*="font-semibold"], [class*="font-medium"]'
+    );
+    const semanticText = normalizeTextTrim(semanticTitle?.textContent);
+    if (semanticText) return semanticText;
+
+    return normalizeTextTrim(anchor?.textContent);
+  }
+
+  function isLikelyConversationMenu(menuItems) {
+    const labels = menuItems.map((el) =>
+      normalizeTextTrim(el.textContent).toLowerCase()
+    );
+    const hasDelete = labels.some((label) => label.includes("delete"));
+    const hasRename = labels.some((label) => label.includes("rename"));
+    const hasArchive = labels.some((label) => label.includes("archive"));
+
+    return hasDelete && (hasRename || hasArchive);
   }
 
   ns.registerProvider(provider);

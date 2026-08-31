@@ -67,6 +67,21 @@
   function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }) {
     const linkDest = (raw) => `<${encodeURI(String(raw ?? ""))}>`;
 
+    function convertImage({ url, alt = "" }) {
+      const imageUrl = String(url || "").trim();
+      if (!imageUrl) return "";
+
+      const imageAlt = String(alt || "").trim();
+      if (downloadImages) {
+        const idx = imageCollector.length + 1;
+        const name = makeImageFilename(idx);
+        imageCollector.push({ url: imageUrl, name, alt: imageAlt });
+        return `![${imageAlt}](${linkDest(`${imageFolder}/${name}`)})`;
+      }
+
+      return `![${imageAlt}](${linkDest(imageUrl)})`;
+    }
+
     function extractLatexFromKatex(el) {
       const ann = el.querySelector?.('annotation[encoding="application/x-tex"]');
       const tex = (ann?.textContent ?? "").trim();
@@ -227,16 +242,7 @@
 
         const alt = (el.getAttribute("alt") || "").trim();
         const url = el.currentSrc || el.src || el.getAttribute("src") || "";
-        if (!url) return "";
-
-        if (downloadImages) {
-          const idx = imageCollector.length + 1;
-          const name = makeImageFilename(idx);
-          imageCollector.push({ url, name, alt });
-          return `![${alt}](${linkDest(`${imageFolder}/${name}`)})`;
-        }
-
-        return `![${alt}](${linkDest(url)})`;
+        return convertImage({ url, alt });
       }
 
       if (tag === "UL" || tag === "OL") {
@@ -261,7 +267,8 @@
     }
 
     return {
-      convertElement: (el) => convertNode(el, { inInline: false, inPre: false, listDepth: 0 })
+      convertElement: (el) => convertNode(el, { inInline: false, inPre: false, listDepth: 0 }),
+      convertImage
     };
   }
 

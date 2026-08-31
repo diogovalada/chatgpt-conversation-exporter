@@ -135,36 +135,47 @@ async function waitForConversationInTab(tabId, timeoutMs = 60_000) {
   return false;
 }
 
-async function getMarkdownFromUrl({ url, title }) {
-  const created = await chrome.tabs.create({ url, active: false });
-  const tabId = created?.id;
-  if (!tabId) throw new Error("Failed to open background tab.");
-
+function isChatGptUrl(url) {
   try {
-    const ready = await waitForConversationInTab(tabId, 90_000);
-    if (!ready) throw new Error("Conversation did not load in time.");
-
-    const extraction = await extractFromTab(tabId, {
-      downloadImages: false,
-      titleOverride: title
-    });
-
-    if (!extraction?.ok) throw new Error(extraction?.error ?? "Extraction failed.");
-
-    const outTitle = extraction.title ?? title ?? "AI Conversation";
-    const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
-    const markdown = extraction.markdown ?? "";
-    return { ok: true, title: outTitle, filename: outFilename, markdown };
-  } finally {
-    try {
-      await chrome.tabs.remove(tabId);
-    } catch {
-      // ignore
-    }
+    const parsed = new URL(url);
+    return (
+      (parsed.hostname === "chatgpt.com" || parsed.hostname === "chat.openai.com") &&
+      /\/c\/[0-9a-f-]{12,}/i.test(parsed.pathname)
+    );
+  } catch {
+    return false;
   }
 }
 
-async function exportConversationFromUrl({ url, title, saveAs, downloadImages }) {
+async function canExtractChatGptFromSourceTab(sourceTabId) {
+  if (!sourceTabId) return false;
+  try {
+    const tab = await chrome.tabs.get(sourceTabId);
+    const parsed = new URL(tab?.url || "");
+    return parsed.hostname === "chatgpt.com" || parsed.hostname === "chat.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+async function extractConversationFromUrl({
+  url,
+  title,
+  downloadImages,
+  sourceTabId
+}) {
+  if (isChatGptUrl(url) && await canExtractChatGptFromSourceTab(sourceTabId)) {
+    const extraction = await extractFromTab(sourceTabId, {
+      conversationUrl: url,
+      downloadImages: Boolean(downloadImages),
+      titleOverride: title
+    });
+    if (!extraction?.ok) {
+      throw new Error(extraction?.error ?? "ChatGPT canonical extraction failed.");
+    }
+    return extraction;
+  }
+
   const created = await chrome.tabs.create({ url, active: false });
   const tabId = created?.id;
   if (!tabId) throw new Error("Failed to open background tab.");
@@ -179,28 +190,7 @@ async function exportConversationFromUrl({ url, title, saveAs, downloadImages })
     });
 
     if (!extraction?.ok) throw new Error(extraction?.error ?? "Extraction failed.");
-
-    const outTitle = extraction.title ?? title ?? "AI Conversation";
-    const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
-    const markdown = extraction.markdown ?? "";
-
-    const wantsImages =
-      Boolean(downloadImages) && Array.isArray(extraction.images) && extraction.images.length > 0;
-
-    if (wantsImages) {
-      await downloadZipBundle({
-        title: outTitle,
-        mdFilename: outFilename,
-        markdown,
-        images: extraction.images,
-        saveAs: Boolean(saveAs)
-      });
-      return { ok: true, bundled: "zip" };
-    }
-
-    const mdUrl = dataUrlForMarkdown(markdown);
-    await chrome.downloads.download({ url: mdUrl, filename: outFilename, saveAs: Boolean(saveAs) });
-    return { ok: true, bundled: "md" };
+    return extraction;
   } finally {
     try {
       await chrome.tabs.remove(tabId);
@@ -210,7 +200,58 @@ async function exportConversationFromUrl({ url, title, saveAs, downloadImages })
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+async function getMarkdownFromUrl({ url, title, sourceTabId }) {
+  const extraction = await extractConversationFromUrl({
+    url,
+    title,
+    downloadImages: false,
+    sourceTabId
+  });
+
+  const outTitle = extraction.title ?? title ?? "AI Conversation";
+  const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
+  const markdown = extraction.markdown ?? "";
+  return { ok: true, title: outTitle, filename: outFilename, markdown };
+}
+
+async function exportConversationFromUrl({
+  url,
+  title,
+  saveAs,
+  downloadImages,
+  sourceTabId
+}) {
+  const extraction = await extractConversationFromUrl({
+    url,
+    title,
+    downloadImages,
+    sourceTabId
+  });
+
+  const outTitle = extraction.title ?? title ?? "AI Conversation";
+  const outFilename = extraction.filename ?? mdFilenameForTitle(outTitle);
+  const markdown = extraction.markdown ?? "";
+
+  const wantsImages =
+    Boolean(downloadImages) && Array.isArray(extraction.images) && extraction.images.length > 0;
+
+  if (wantsImages) {
+    await downloadZipBundle({
+      title: outTitle,
+      mdFilename: outFilename,
+      markdown,
+      images: extraction.images,
+      saveAs: Boolean(saveAs)
+    });
+    return { ok: true, bundled: "zip" };
+  }
+
+  const mdUrl = dataUrlForMarkdown(markdown);
+  await chrome.downloads.download({ url: mdUrl, filename: outFilename, saveAs: Boolean(saveAs) });
+  return { ok: true, bundled: "md" };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message?.type === "GET_MARKDOWN_BY_URL") {
       const url = String(message.url || "");
@@ -219,7 +260,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
       const title = String(message.title || "") || "AI Conversation";
-      const res = await getMarkdownFromUrl({ url, title });
+      const res = await getMarkdownFromUrl({ url, title, sourceTabId: sender.tab?.id });
       sendResponse(res);
       return;
     }
@@ -262,7 +303,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         url,
         title,
         saveAs: Boolean(message.saveAs),
-        downloadImages: Boolean(message.downloadImages)
+        downloadImages: Boolean(message.downloadImages),
+        sourceTabId: sender.tab?.id
       });
       sendResponse(result);
       return;

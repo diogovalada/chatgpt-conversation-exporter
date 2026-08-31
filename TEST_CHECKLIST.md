@@ -23,6 +23,9 @@ The fixture conversation should include all of the following whenever the provid
 - Long output inside a scrollable code or tool panel
 - At least one ordinary visible code block outside a tool panel
 - A long enough conversation to force lazy loading or virtualization on the provider UI, if that UI virtualizes turns
+- A bidirectionally virtualized conversation where newer turns unload while scrolling toward the oldest turn
+- A very long ChatGPT conversation where the rendered DOM and legacy endpoint start at a later segment but authenticated pagination contains the older turns
+- A pagination-complete ChatGPT API response exports without moving the conversation scroll position
 
 ## Optional But Worth Testing
 
@@ -46,12 +49,15 @@ These cases are provider-dependent. If the UI supports them, test and document t
 - `Save to Downloads`
 - `Save As...`
 - Sidebar conversation-menu export by URL
+- ChatGPT project-home conversation-menu export by URL
 - Background-tab export followed by automatic tab close
 - Saved static HTML snapshot export
 
 ## Pass Criteria
 
 - No user or assistant turns are silently skipped
+- Previously captured newer turns remain in the export after older history pages load
+- A known long-conversation fixture preserves both its expected user/assistant turn counts and a unique phrase from the first prompt
 - Turn order matches the UI order
 - Multi-line user prompts keep their paragraph breaks
 - Markdown content remains readable and structurally correct
@@ -63,6 +69,7 @@ These cases are provider-dependent. If the UI supports them, test and document t
 - Collapsed saved tool panels are still represented, with an explicit note when inner content is missing from the HTML
 - Duplicate images are not emitted repeatedly unless they are distinct conversation content
 - Filenames are sanitized safely for Windows paths
+- Project-home filenames use only the conversation title, not the preview snippet
 - Sidebar export and open-tab export produce equivalent Markdown for the same conversation
 
 ## Suggested Prompt Sequence

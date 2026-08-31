@@ -14,19 +14,21 @@
     }));
   }
 
-  function extractConversation(options = {}) {
+  async function extractConversation(options = {}) {
     const provider = ns.getActiveProvider();
     if (!provider) {
       return { ok: false, error: "This page is not supported." };
     }
 
-    if (!provider.hasConversation()) {
+    await provider.prepareForExtraction?.(options);
+
+    if (!provider.hasConversation(options)) {
       return { ok: false, error: "No conversation content found." };
     }
 
     const rawTitle = String(
       options.titleOverride ||
-      provider.getTitle?.() ||
+      provider.getTitle?.(options) ||
       document.title ||
       "AI Conversation"
     );
@@ -39,7 +41,7 @@
       return { ok: false, error: "No messages are selected." };
     }
 
-    const turns = provider.getTurns?.(options) || [];
+    const turns = await provider.getTurns?.(options) || [];
     if (!Array.isArray(turns) || turns.length === 0) {
       return { ok: false, error: "No conversation content found." };
     }

@@ -28,9 +28,11 @@ Exports ChatGPT and Claude conversations to Markdown or a single zip bundle with
 - Choose **Save to Downloads** or **Save As…**
 - Optional: enable **Download images** to download a single `.zip` that contains the `.md` and a `*-assets/` folder
 
-### Method 2: Download from conversation list (left sidebar)
+### Method 2: Download from a conversation list
 
-When you open the 3-dots menu for a supported conversation in the left sidebar, click **Download**. This opens a background tab, exports the conversation, and closes the tab automatically afterwards.
+When you open the 3-dots menu for a supported conversation in the left sidebar or a ChatGPT project home, click **Download**. This opens a background tab, exports the conversation, and closes the tab automatically afterwards.
+
+For live ChatGPT conversations, the exporter authenticates with the current ChatGPT session and loads the fully paginated active branch before attempting any DOM scrolling. It follows every previous-page cursor and exports immediately once the API reaches the first page; currently rendered turns may still enrich its formatting. The legacy full-conversation endpoint and context-continuation stitching are fallbacks only when pagination fails. If API coverage cannot be proven, a direct conversation-page export runs the DOM fallback, which retains snapshots from every rendered window, including newer turns that ChatGPT unloads while older history is loading, and restores the original scroll position afterwards. Project-home and sidebar exports fail visibly instead of silently saving a partial remote conversation when API coverage is unavailable.
 
 ## Provider Support Checklist
 

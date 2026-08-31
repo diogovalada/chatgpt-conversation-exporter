@@ -2,7 +2,11 @@
   const ns = window.ChatExporter;
   const provider = ns.getPrimaryProvider();
 
-  provider?.initSidebarIntegration?.((selection) => ns.openSidebarPanel(selection));
+  provider?.initSidebarIntegration?.((selection) => {
+    void ns.openSidebarPanel(selection).catch((error) => {
+      console.error("AI Conversation Exporter could not open the download panel.", error);
+    });
+  });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "PING") {
@@ -17,7 +21,13 @@
     }
 
     if (message?.type === "EXTRACT_CONVERSATION") {
-      sendResponse(ns.extractConversation(message.options || {}));
+      (async () => {
+        try {
+          sendResponse(await ns.extractConversation(message.options || {}));
+        } catch (err) {
+          sendResponse({ ok: false, error: String(err?.message || err || "Extraction failed.") });
+        }
+      })();
       return true;
     }
 

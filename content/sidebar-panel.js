@@ -63,6 +63,10 @@
     await chrome.storage.local.set({ [ns.STORAGE_KEY]: settings });
   }
 
+  function isExtensionContextInvalidated(error) {
+    return /extension context invalidated/i.test(String(error?.message || error || ""));
+  }
+
   function closeSidebarPanel() {
     document.getElementById("chat-exporter-backdrop")?.remove();
     document.getElementById("chat-exporter-panel")?.remove();
@@ -74,6 +78,31 @@
     el.textContent = text;
     el.classList.toggle("chat-exporter-status-error", kind === "error");
     el.classList.toggle("chat-exporter-status-ok", kind === "ok");
+  }
+
+  function showRefreshRequiredPanel(selection) {
+    closeSidebarPanel();
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "chat-exporter-backdrop";
+    backdrop.className = "chat-exporter-backdrop";
+    backdrop.addEventListener("click", () => closeSidebarPanel());
+    document.body.appendChild(backdrop);
+
+    const panel = document.createElement("div");
+    panel.id = "chat-exporter-panel";
+    panel.className = "chat-exporter-panel";
+    panel.innerHTML = `
+      <div class="chat-exporter-row">
+        <div class="chat-exporter-title">Extension reloaded</div>
+        <button class="chat-exporter-x" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="chat-exporter-muted">
+        Refresh this ChatGPT page before downloading ${String(selection?.title || "the conversation")}.
+      </div>
+    `;
+    document.body.appendChild(panel);
+    panel.querySelector(".chat-exporter-x")?.addEventListener("click", () => closeSidebarPanel());
   }
 
   async function copyTextToClipboard(text) {
@@ -105,7 +134,16 @@
     ensureSidebarPanelStyles();
     closeSidebarPanel();
 
-    const settings = await loadSettings();
+    let settings;
+    try {
+      settings = await loadSettings();
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        showRefreshRequiredPanel(selection);
+        return;
+      }
+      throw error;
+    }
     const providerName = String(selection?.providerName || "conversation");
     const selectedTitle = String(selection?.title || "Conversation");
 
@@ -143,7 +181,15 @@
     const cb = panel.querySelector("#chat-exporter-images");
     cb.checked = Boolean(settings.downloadImages);
     cb.addEventListener("change", async () => {
-      await saveSettings({ downloadImages: cb.checked });
+      try {
+        await saveSettings({ downloadImages: cb.checked });
+      } catch (error) {
+        if (isExtensionContextInvalidated(error)) {
+          setPanelStatus("Extension reloaded. Refresh this ChatGPT page.", "error");
+          return;
+        }
+        setPanelStatus(`Failed: ${String(error?.message || error)}`, "error");
+      }
     });
 
     const copyBtn = panel.querySelector("#chat-exporter-copy");
