@@ -8,7 +8,7 @@ const source = fs.readFileSync(
   "utf8"
 );
 const testSource = source
-  .replace("      filterTurns\n    };", "      filterTurns,\n      activate,\n      state\n    };")
+  .replace("      filterTurns\n    };", "      filterTurns,\n      activate,\n      getRenderedTurns,\n      scheduleRender,\n      scheduleScrollRender,\n      state\n    };")
   .replace("  ns.registerProvider(provider);", "  ns.testSelectionController = selectionController;\n  ns.registerProvider(provider);");
 assert.notEqual(testSource, source);
 
@@ -158,6 +158,27 @@ vm.runInNewContext(testSource, {
   assert.equal(canonicalTurns[1].checkboxAnchorEl, assistantMarkdown);
 
   const selection = ChatExporter.testSelectionController;
+  const querySelectorAll = root.querySelectorAll.bind(root);
+  let turnScans = 0;
+  root.querySelectorAll = (selector) => {
+    if (selector === 'article[data-testid^="conversation-turn-"]') turnScans += 1;
+    return querySelectorAll(selector);
+  };
+
+  selection.getRenderedTurns();
+  assert.equal(turnScans, 1);
+  selection.scheduleScrollRender();
+  selection.getRenderedTurns();
+  assert.equal(turnScans, 1, "scroll should reuse the rendered turn list");
+  selection.scheduleRender();
+  selection.getRenderedTurns();
+  assert.equal(turnScans, 2, "DOM changes should refresh the rendered turn list");
+
+  locationState.href = "https://chatgpt.com/c/another-conversation-id";
+  selection.getRenderedTurns();
+  assert.equal(turnScans, 3, "navigation should refresh the rendered turn list");
+  locationState.href = "https://chatgpt.com/c/conversation-id";
+
   selection.activate(false);
   selection.state.selectedIds.add("assistant:assistant-id");
   root.children = [userContainer];

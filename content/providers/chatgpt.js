@@ -926,6 +926,9 @@
       selectedIds: new Set(),
       sourceIdsByTurnId: new Map(),
       rafId: 0,
+      turnsDirty: true,
+      renderedConversationId: "",
+      renderedTurns: [],
       checkboxEls: new Map(),
       buttonEl: null,
       menuEl: null,
@@ -941,14 +944,29 @@
       ensureStyles();
       ensureElements();
 
-      document.addEventListener("scroll", scheduleRender, true);
+      document.addEventListener("scroll", scheduleScrollRender, true);
       document.addEventListener("pointerdown", onPointerDown, true);
       document.addEventListener("keydown", onKeyDown, true);
       document.addEventListener("input", onInput, true);
-      window.addEventListener("resize", scheduleRender);
+      window.addEventListener("resize", scheduleScrollRender);
 
       state.observer = new MutationObserver(() => scheduleRender());
-      state.observer.observe(document.body, { childList: true, subtree: true });
+      state.observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: [
+          "data-message-author-role",
+          "data-message-id",
+          "data-testid",
+          "data-turn",
+          "data-turn-id",
+          "data-conversation-role",
+          "data-chatgpt-search-unit-key",
+          "data-chatgpt-search-message-ids",
+          "data-chatgpt-selection-message-id"
+        ],
+        childList: true,
+        subtree: true
+      });
 
       scheduleRender();
     }
@@ -1263,8 +1281,23 @@
     }
 
     function scheduleRender() {
+      state.turnsDirty = true;
+      scheduleScrollRender();
+    }
+
+    function scheduleScrollRender() {
       if (state.rafId) return;
       state.rafId = window.requestAnimationFrame(render);
+    }
+
+    function getRenderedTurns() {
+      const conversationId = ns.chatGptData.getConversationId(location.href);
+      if (state.turnsDirty || state.renderedConversationId !== conversationId) {
+        state.renderedTurns = buildChatGptTurns();
+        state.renderedConversationId = conversationId;
+        state.turnsDirty = false;
+      }
+      return state.renderedTurns;
     }
 
     function render() {
@@ -1272,7 +1305,7 @@
       ensureElements();
       resetForNavigation();
 
-      const turns = buildChatGptTurns();
+      const turns = getRenderedTurns();
       if (state.active) {
         syncSelectionWithTurns(turns);
       }
