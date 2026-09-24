@@ -1,9 +1,19 @@
-name: Build Extension Zip
+name: Build and publish extension
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_existing:
+        description: Publish the release matching manifest.json to the Chrome Web Store
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: extension-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -11,60 +21,174 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      asset: ${{ steps.meta.outputs.asset }}
+      should_release: ${{ steps.release_check.outputs.should_release }}
+      release_exists: ${{ steps.release_check.outputs.release_exists }}
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Read version
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Read release metadata
         id: meta
+        shell: bash
         run: |
           VERSION="$(node -p "require('./manifest.json').version")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset=chatgpt-conversation-exporter.zip" >> "$GITHUB_OUTPUT"
 
-      - name: Check if release is needed
+      - name: Validate source package
+        run: node scripts/validate-extension.mjs .
+
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find background.js popup.js content scripts tests -type f \( -name '*.js' -o -name '*.mjs' \) -print0)
+
+      - name: Run tests
+        shell: bash
+        run: |
+          for test_file in tests/*.test.js; do
+            node "$test_file"
+          done
+
+      - name: Check whether this version already has a release
         id: release_check
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+          TARGET_TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
         run: |
-          TARGET_TAG="${{ steps.meta.outputs.tag }}"
-          LATEST_TAG="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
-          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
-
-          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" != "$TARGET_TAG" ]; then
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "Will create release: $TARGET_TAG (latest: ${LATEST_TAG:-none})"
-            echo "### Release" >> "$GITHUB_STEP_SUMMARY"
-            echo "Will create release **$TARGET_TAG** (latest: ${LATEST_TAG:-none})." >> "$GITHUB_STEP_SUMMARY"
+          if gh release view "$TARGET_TAG" >/dev/null 2>&1; then
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            if gh release view "$TARGET_TAG" --json assets --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "Release $TARGET_TAG and its package already exist."
+            else
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+              echo "Release $TARGET_TAG exists, but its package will be repaired."
+            fi
           else
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "No release: manifest version unchanged ($TARGET_TAG)"
-            echo "### Release" >> "$GITHUB_STEP_SUMMARY"
-            echo "No release — manifest version unchanged (**$TARGET_TAG**)." >> "$GITHUB_STEP_SUMMARY"
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TARGET_TAG will be created."
           fi
 
-      - name: Create zip
+      - name: Create extension ZIP
         if: steps.release_check.outputs.should_release == 'true'
+        env:
+          ASSET: ${{ steps.meta.outputs.asset }}
+          RELEASE_EXISTS: ${{ steps.release_check.outputs.release_exists }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
         run: |
-          zip -r chatgpt-conversation-exporter.zip \
+          mkdir -p dist
+          PACKAGE_REF="$GITHUB_SHA"
+          if [ "$RELEASE_EXISTS" = "true" ]; then
+            PACKAGE_REF="$TAG"
+          fi
+          git archive \
+            --format=zip \
+            --output="dist/$ASSET" \
+            "$PACKAGE_REF" \
             manifest.json \
             background.js \
-            content_script.js \
             popup.html \
             popup.css \
             popup.js \
-            PRIVACY.md \
-            README.md \
-            vendor \
-            icons
+            content \
+            icons \
+            vendor
 
-      - name: Create/update GitHub Release
+          mkdir -p dist/unpacked
+          unzip -q "dist/$ASSET" -d dist/unpacked
+          node scripts/validate-extension.mjs dist/unpacked
+          unzip -t "dist/$ASSET"
+
+      - name: Create GitHub release
         if: steps.release_check.outputs.should_release == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_EXISTS: ${{ steps.release_check.outputs.release_exists }}
+        shell: bash
         run: |
-          TAG="${{ steps.meta.outputs.tag }}"
-          TITLE="ChatGPT Conversation Exporter ${{ steps.meta.outputs.version }}"
-          NOTES="Automated build from $GITHUB_SHA"
+          if [ "$RELEASE_EXISTS" = "true" ]; then
+            gh release upload "$TAG" "dist/$ASSET" --clobber
+          else
+            gh release create "$TAG" \
+              "dist/$ASSET" \
+              --target "$GITHUB_SHA" \
+              --title "AI Conversation Exporter $VERSION" \
+              --generate-notes
+          fi
 
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" -t "$TITLE" -n "$NOTES"
-          gh release upload "$TAG" chatgpt-conversation-exporter.zip --clobber
+      - name: Summarize release
+        env:
+          SHOULD_RELEASE: ${{ steps.release_check.outputs.should_release }}
+          RELEASE_EXISTS: ${{ steps.release_check.outputs.release_exists }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
+        run: |
+          if [ "$SHOULD_RELEASE" = "true" ]; then
+            if [ "$RELEASE_EXISTS" = "true" ]; then
+              echo "### Repaired package for $TAG" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "### Created $TAG" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "### No release created" >> "$GITHUB_STEP_SUMMARY"
+            echo "The release for $TAG already exists." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  publish_chrome_web_store:
+    name: Publish to Chrome Web Store
+    needs: build
+    if: >-
+      vars.CWS_PUBLISH_ENABLED == 'true' &&
+      (needs.build.outputs.should_release == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_existing))
+    runs-on: ubuntu-latest
+    environment: chrome-web-store
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download release package
+        env:
+          ASSET: ${{ needs.build.outputs.asset }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --pattern "$ASSET" --dir dist
+
+      - name: Upload and submit for review
+        env:
+          CWS_EXTENSION_ID: ${{ vars.CWS_EXTENSION_ID }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+        run: node scripts/publish-chrome-web-store.mjs "dist/${{ needs.build.outputs.asset }}"
