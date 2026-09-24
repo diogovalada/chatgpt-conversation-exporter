@@ -14,6 +14,8 @@ Exports ChatGPT and Claude conversations to Markdown or a single zip bundle with
 4. Click **Load unpacked**
 5. Select the extracted folder (the one containing `manifest.json`)
 
+Chrome Web Store publishing and release automation are documented in [PUBLISHING.md](./PUBLISHING.md). Ready-to-paste listing and reviewer text is in [STORE_LISTING.md](./STORE_LISTING.md).
+
 ## Supported Providers
 
 - ChatGPT on `chatgpt.com` and `chat.openai.com`
@@ -33,6 +35,8 @@ Exports ChatGPT and Claude conversations to Markdown or a single zip bundle with
 When you open the 3-dots menu for a supported conversation in the left sidebar or a ChatGPT project home, click **Download**. This opens a background tab, exports the conversation, and closes the tab automatically afterwards.
 
 For live ChatGPT conversations, the exporter authenticates with the current ChatGPT session and loads the fully paginated active branch before attempting any DOM scrolling. It follows every previous-page cursor and exports immediately once the API reaches the first page; currently rendered turns may still enrich its formatting. The legacy full-conversation endpoint and context-continuation stitching are fallbacks only when pagination fails. If API coverage cannot be proven, a direct conversation-page export runs the DOM fallback, which retains snapshots from every rendered window, including newer turns that ChatGPT unloads while older history is loading, and restores the original scroll position afterwards. Project-home and sidebar exports fail visibly instead of silently saving a partial remote conversation when API coverage is unavailable.
+
+For live Claude conversations, the exporter likewise uses the authenticated first-party conversation endpoint before touching the page. It resolves the conversation across the account's organizations, requests all message and tool blocks, and follows `current_leaf_message_uuid` to export only the active branch. If that API is unavailable, the DOM fallback loads earlier messages and snapshots the virtualized feed until every advertised `Message N of M` index has been collected; otherwise it fails rather than saving a partial transcript.
 
 ## Provider Support Checklist
 
@@ -57,4 +61,4 @@ For the full regression checklist and a suggested "golden conversation" fixture,
 
 ## Privacy
 
-This extensions collects **NO** data. See `PRIVACY.md`.
+The extension handles only the conversation content needed for a user-requested export and processes it locally in the browser. The developer does not receive, retain, sell, or share conversation data, and the extension includes no analytics or advertising. See [PRIVACY.md](./PRIVACY.md).

@@ -36,7 +36,7 @@
     const mdFilename = `${safeTitle}.md`;
     const imageFolder = `${safeTitle}-assets`;
 
-    const selectionStatus = provider.getSelectionStatus?.() || null;
+    const selectionStatus = provider.getSelectionStatus?.(options) || null;
     if (selectionStatus?.active && selectionStatus.selectedCount === 0) {
       return { ok: false, error: "No messages are selected." };
     }

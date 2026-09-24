@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Conversation Exporter",
-  "version": "0.4.0",
+  "version": "0.4.3",
   "description": "Export ChatGPT and Claude conversations to Markdown (.md) or a zip with images.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -19,13 +19,13 @@
       "128": "icons/icon-128.png"
     }
   },
-  "permissions": ["activeTab", "downloads", "storage"],
+  "permissions": ["downloads", "storage"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://images.openai.com/*",
     "https://claude.ai/*",
-    "https://*.anthropic.com/*"
+    "https://assets-proxy.anthropic.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -54,12 +54,19 @@
     },
     {
       "matches": ["https://claude.ai/*"],
+      "js": ["content/providers/claude-page-fetch.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
       "js": [
         "content/shared.js",
         "content/provider-registry.js",
         "content/markdown-converter.js",
         "content/extraction.js",
         "content/sidebar-panel.js",
+        "content/providers/claude-data.js",
         "content/providers/claude.js",
         "content/content_main.js"
       ],

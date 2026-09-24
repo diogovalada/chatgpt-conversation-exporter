@@ -26,6 +26,8 @@ The fixture conversation should include all of the following whenever the provid
 - A bidirectionally virtualized conversation where newer turns unload while scrolling toward the oldest turn
 - A very long ChatGPT conversation where the rendered DOM and legacy endpoint start at a later segment but authenticated pagination contains the older turns
 - A pagination-complete ChatGPT API response exports without moving the conversation scroll position
+- A long Claude conversation where the DOM starts near the final messages but the authenticated API contains the opening prompt
+- A branched Claude conversation exports the lineage ending at `current_leaf_message_uuid`, not abandoned alternatives
 
 ## Optional But Worth Testing
 

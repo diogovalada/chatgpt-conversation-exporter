@@ -10,6 +10,15 @@ const source = fs.readFileSync(
 
 const ChatExporter = {};
 const insertedItems = [];
+const windowStub = {
+  ChatExporter,
+  getComputedStyle(element) {
+    return {
+      display: element.computedDisplay || "block",
+      visibility: element.computedVisibility || "visible"
+    };
+  }
+};
 const documentStub = {
   createTreeWalker(root) {
     let consumed = false;
@@ -25,7 +34,7 @@ const documentStub = {
   }
 };
 vm.runInNewContext(source, {
-  window: { ChatExporter },
+  window: windowStub,
   document: documentStub,
   Node: { ELEMENT_NODE: 1 },
   NodeFilter: { SHOW_TEXT: 4 }
@@ -72,7 +81,7 @@ const headerMenu = {
   nodeType: 1,
   dataset: {},
   querySelectorAll() {
-    return [viewFilesItem, archiveItem, deleteItem];
+    return [hiddenShareItem, viewFilesItem, archiveItem, deleteItem];
   }
 };
 
@@ -107,6 +116,8 @@ const viewFilesItem = {
     insertedItems.push(item);
   }
 };
+const hiddenShareItem = makeItem("Share", headerMenu);
+hiddenShareItem.computedDisplay = "none";
 const archiveItem = makeItem("Archive", headerMenu);
 const deleteItem = makeItem("Delete", headerMenu);
 
@@ -124,4 +135,21 @@ assert.equal(cloneCount, 1);
 assert.equal(insertedItems.length, 1);
 assert.equal(insertedItems[0].textNode.nodeValue, "Download");
 assert.equal(headerMenu.dataset.chatExporterInjected, "1");
+
+const nestedMenu = { id: "nested" };
+const existingMenu = {
+  nodeType: 1,
+  matches(selector) {
+    return selector === '[role="menu"]';
+  },
+  closest(selector) {
+    return selector === '[role="menu"]' ? this : null;
+  },
+  querySelectorAll() {
+    return [nestedMenu];
+  }
+};
+const discoveredMenus = ChatExporter.menuUtils.findMenusFromNode(existingMenu);
+assert.deepEqual(Array.from(discoveredMenus), [existingMenu, nestedMenu]);
+
 console.log("menu injection tests passed");

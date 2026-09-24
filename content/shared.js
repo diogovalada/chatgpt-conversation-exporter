@@ -145,6 +145,14 @@
     svg.replaceWith(newSvg);
   }
 
+  function isRenderedMenuItem(item) {
+    if (item.hidden || item.getAttribute?.("aria-hidden") === "true") return false;
+    if (typeof window.getComputedStyle !== "function") return true;
+
+    const style = window.getComputedStyle(item);
+    return style.display !== "none" && style.visibility !== "hidden";
+  }
+
   function injectDownloadIntoMenu({ menuEl, getSelection, isLikelyConversationMenu, onDownloadClick }) {
     if (!menuEl || menuEl.nodeType !== Node.ELEMENT_NODE) return;
     if (menuEl.dataset.chatExporterInjected === "1") return;
@@ -159,10 +167,12 @@
 
     if (isLikelyConversationMenu && !isLikelyConversationMenu(menuItems)) return;
 
+    const renderedItems = menuItems.filter(isRenderedMenuItem);
+    const templateItems = renderedItems.length > 0 ? renderedItems : menuItems;
     const templateItem =
-      menuItems.find((el) => normalizeTextTrim(el.textContent).toLowerCase() === "share") ||
-      menuItems.find((el) => normalizeTextTrim(el.textContent).toLowerCase().startsWith("share")) ||
-      menuItems[0];
+      templateItems.find((el) => normalizeTextTrim(el.textContent).toLowerCase() === "share") ||
+      templateItems.find((el) => normalizeTextTrim(el.textContent).toLowerCase().startsWith("share")) ||
+      templateItems[0];
 
     if (!templateItem) return;
 
@@ -227,6 +237,23 @@
     menuEl.dataset.chatExporterInjected = "1";
   }
 
+  function findMenusFromNode(node) {
+    const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    if (!el) return [];
+
+    const menus = new Set();
+    if (el.matches?.('[role="menu"]')) menus.add(el);
+
+    const parentMenu = el.closest?.('[role="menu"]');
+    if (parentMenu) menus.add(parentMenu);
+
+    for (const menu of Array.from(el.querySelectorAll?.('[role="menu"]') || [])) {
+      menus.add(menu);
+    }
+
+    return Array.from(menus);
+  }
+
   ns.STORAGE_KEY = ns.STORAGE_KEY || "chatgpt_md_downloader_settings";
   ns.helpers = {
     compareDomOrder,
@@ -244,6 +271,7 @@
     wrapCollapsibleSection
   };
   ns.menuUtils = {
+    findMenusFromNode,
     injectDownloadIntoMenu,
     maybeCloseRadixMenu,
     replaceMenuIconWithDownload

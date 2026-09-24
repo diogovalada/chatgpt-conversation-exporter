@@ -9,20 +9,49 @@
     wrapCollapsibleSection
   } = ns.helpers;
 
+  const extractionState = {
+    conversationId: "",
+    canonicalTurns: null,
+    fallbackContainers: null,
+    title: "",
+    apiError: ""
+  };
+
   const provider = {
     id: "claude",
     name: "Claude",
 
-    hasConversation() {
-      return getConversationTurnContainers().length > 0;
+    hasConversation(options = {}) {
+      const conversationId = ns.claudeData.getConversationId(options.conversationUrl || location.href);
+      const preparedForCurrentConversation = extractionState.conversationId === conversationId;
+      return Boolean(
+        (preparedForCurrentConversation && extractionState.canonicalTurns?.length) ||
+        (preparedForCurrentConversation && extractionState.fallbackContainers?.length) ||
+        getConversationTurnContainers().length
+      );
     },
 
-    getTitle() {
-      return document.title || "Claude Conversation";
+    getTitle(options = {}) {
+      const conversationId = ns.claudeData.getConversationId(options.conversationUrl || location.href);
+      const preparedForCurrentConversation = extractionState.conversationId === conversationId;
+      return (preparedForCurrentConversation && extractionState.title) || document.title || "Claude Conversation";
     },
 
-    getTurns() {
-      const turnContainers = getConversationTurnContainers();
+    async prepareForExtraction(options = {}) {
+      await prepareClaudeExtraction(options);
+    },
+
+    getTurns(options = {}) {
+      const conversationId = ns.claudeData.getConversationId(options.conversationUrl || location.href);
+      const preparedForCurrentConversation = extractionState.conversationId === conversationId;
+
+      if (preparedForCurrentConversation && extractionState.canonicalTurns?.length) {
+        return extractionState.canonicalTurns;
+      }
+
+      const turnContainers = preparedForCurrentConversation && extractionState.fallbackContainers?.length
+        ? extractionState.fallbackContainers
+        : getConversationTurnContainers();
       const turns = [];
 
       for (const turnEl of turnContainers) {
@@ -85,6 +114,259 @@
     }
   };
 
+  async function prepareClaudeExtraction(options = {}) {
+    const conversationUrl = options.conversationUrl || location.href;
+    const conversationId = ns.claudeData.getConversationId(conversationUrl);
+    extractionState.conversationId = conversationId;
+    extractionState.canonicalTurns = null;
+    extractionState.fallbackContainers = null;
+    extractionState.title = "";
+    extractionState.apiError = "";
+
+    if (!conversationId) return;
+
+    const payloadResult = await ns.claudeData.fetchConversationPayload(conversationUrl)
+      .then((payload) => ({ payload, error: null }))
+      .catch((error) => ({ payload: null, error }));
+    const payload = payloadResult.payload;
+    extractionState.title = normalizeTextTrim(payload?.name);
+    extractionState.apiError = String(payloadResult.error?.message || payloadResult.error || "");
+
+    const descriptors = payload ? ns.claudeData.buildTurnDescriptors(payload) : [];
+    if (descriptors.length > 0) {
+      extractionState.canonicalTurns = descriptors.map(createCanonicalTurn);
+      return;
+    }
+
+    const targetsCurrentDocument = conversationId === ns.claudeData.getConversationId(location.href);
+    if (!targetsCurrentDocument) {
+      throw new Error(extractionState.apiError || "Claude conversation data was unavailable.");
+    }
+
+    let domError = null;
+    try {
+      extractionState.fallbackContainers = await collectClaudeTurnContainers();
+    } catch (error) {
+      domError = error;
+    }
+
+    if (extractionState.fallbackContainers?.length) return;
+
+    const domMessage = String(domError?.message || domError || "Claude DOM collection failed.");
+    const apiMessage = extractionState.apiError || "Claude canonical data was unavailable.";
+    throw new Error(`${domMessage} ${apiMessage}`.trim());
+  }
+
+  function createCanonicalTurn(descriptor) {
+    return {
+      id: descriptor.id,
+      role: descriptor.role,
+      sourceMessageIds: descriptor.messageIds || [],
+      toMarkdown(converter) {
+        return ns.claudeData.renderTurnDescriptor(descriptor, converter);
+      }
+    };
+  }
+
+  function findClaudeMessageFeed(root = document) {
+    return root.querySelector?.('[role="feed"][aria-label="Chat messages"]') ||
+      root.querySelector?.('[role="feed"]') ||
+      null;
+  }
+
+  function getClaudeMessagePosition(article) {
+    const label = String(article?.getAttribute?.("aria-label") || "");
+    const numbers = label.match(/\d+/g) || [];
+    if (numbers.length < 2) return null;
+
+    const index = Number(numbers[0]);
+    const total = Number(numbers[1]);
+    if (!Number.isInteger(index) || !Number.isInteger(total) || index < 1 || total < index) {
+      return null;
+    }
+    return { index, total };
+  }
+
+  function getClaudeMessageArticles(root = document) {
+    const feed = root.matches?.('[role="feed"]') ? root : findClaudeMessageFeed(root);
+    if (!feed) return [];
+    return Array.from(feed.querySelectorAll("article")).filter((article) => getClaudeMessagePosition(article));
+  }
+
+  function findLoadEarlierMessagesButton() {
+    const feed = findClaudeMessageFeed();
+    if (!feed) return null;
+
+    return Array.from(feed.querySelectorAll("button")).find((button) => {
+      const label = normalizeTextTrim(button.getAttribute("aria-label") || button.textContent).toLowerCase();
+      return label === "load earlier messages" || label.includes("load earlier messages");
+    }) || null;
+  }
+
+  function findClaudeConversationScroller() {
+    let current = findClaudeMessageFeed() || getClaudeMessageArticles()[0] || null;
+
+    while (current) {
+      const style = typeof getComputedStyle === "function" ? getComputedStyle(current) : null;
+      if (
+        current.scrollHeight > current.clientHeight + 100 &&
+        (!style || /(auto|scroll)/.test(style.overflowY))
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+
+    const scrollingElement = document.scrollingElement;
+    return scrollingElement?.scrollHeight > scrollingElement?.clientHeight + 100
+      ? scrollingElement
+      : null;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function settleClaudeDom(ms = 120) {
+    await Promise.race([
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      wait(250)
+    ]);
+    await wait(ms);
+  }
+
+  function createClaudeSnapshotStore() {
+    const records = new Map();
+    let expectedCount = 0;
+
+    function capture() {
+      for (const article of getClaudeMessageArticles()) {
+        const position = getClaudeMessagePosition(article);
+        if (!position) continue;
+        expectedCount = Math.max(expectedCount, position.total);
+        records.set(position.index, article.cloneNode(true));
+      }
+    }
+
+    function hasCompleteCoverage() {
+      if (expectedCount < 1) return false;
+      for (let index = 1; index <= expectedCount; index += 1) {
+        if (!records.has(index)) return false;
+      }
+      return true;
+    }
+
+    function getOrderedContainers() {
+      if (!hasCompleteCoverage()) {
+        const missing = [];
+        for (let index = 1; index <= expectedCount; index += 1) {
+          if (!records.has(index)) missing.push(index);
+        }
+        throw new Error(
+          `Claude did not render message indexes: ${missing.slice(0, 20).join(", ")}${missing.length > 20 ? ", ..." : ""}.`
+        );
+      }
+
+      return Array.from({ length: expectedCount }, (_, offset) => records.get(offset + 1)).filter(Boolean);
+    }
+
+    return { capture, getOrderedContainers, hasCompleteCoverage };
+  }
+
+  function getCurrentFirstMessageIndex() {
+    const indexes = getClaudeMessageArticles()
+      .map((article) => getClaudeMessagePosition(article)?.index || 0)
+      .filter(Boolean);
+    return indexes.length > 0 ? Math.min(...indexes) : 0;
+  }
+
+  async function loadEarlierClaudeMessages(snapshots) {
+    snapshots.capture();
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const button = findLoadEarlierMessagesButton();
+      if (!button) return;
+
+      const previousFirstIndex = getCurrentFirstMessageIndex();
+      button.click();
+      let advanced = false;
+
+      for (let poll = 0; poll < 40; poll += 1) {
+        await settleClaudeDom(100);
+        snapshots.capture();
+
+        const firstIndex = getCurrentFirstMessageIndex();
+        if (!button.isConnected || !findLoadEarlierMessagesButton() || (firstIndex && firstIndex < previousFirstIndex)) {
+          advanced = true;
+          break;
+        }
+      }
+
+      if (!advanced) {
+        throw new Error("Claude's earlier-message loader did not advance.");
+      }
+    }
+
+    throw new Error("Claude's earlier-message loader did not finish.");
+  }
+
+  async function sweepClaudeConversation(scroller, snapshots) {
+    for (const stepRatio of [0.65, 0.3]) {
+      const step = Math.max(180, Math.floor(scroller.clientHeight * stepRatio));
+      let position = 0;
+
+      for (let attempt = 0; attempt < 4000; attempt += 1) {
+        const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        scroller.scrollTop = Math.min(position, maxScrollTop);
+        await settleClaudeDom(90);
+        snapshots.capture();
+
+        if (snapshots.hasCompleteCoverage()) return snapshots.getOrderedContainers();
+        if (position >= maxScrollTop) break;
+        position = Math.min(position + step, maxScrollTop);
+      }
+    }
+
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    await settleClaudeDom(120);
+    snapshots.capture();
+    return snapshots.getOrderedContainers();
+  }
+
+  async function collectClaudeTurnContainers() {
+    const initialArticles = getClaudeMessageArticles();
+    if (initialArticles.length === 0) {
+      return getConversationTurnContainers().map((container) => container.cloneNode(true));
+    }
+
+    const initialScroller = findClaudeConversationScroller();
+    const bottomOffset = initialScroller
+      ? Math.max(0, initialScroller.scrollHeight - initialScroller.clientHeight - initialScroller.scrollTop)
+      : 0;
+    const snapshots = createClaudeSnapshotStore();
+
+    try {
+      snapshots.capture();
+      await loadEarlierClaudeMessages(snapshots);
+      if (snapshots.hasCompleteCoverage()) return snapshots.getOrderedContainers();
+
+      const scroller = findClaudeConversationScroller();
+      if (!scroller) {
+        return snapshots.getOrderedContainers();
+      }
+      return await sweepClaudeConversation(scroller, snapshots);
+    } finally {
+      const restoreScroller = findClaudeConversationScroller() || initialScroller;
+      if (restoreScroller) {
+        restoreScroller.scrollTop = Math.max(
+          0,
+          restoreScroller.scrollHeight - restoreScroller.clientHeight - bottomOffset
+        );
+        await settleClaudeDom(0);
+      }
+    }
+  }
+
   function countUserMessages(root) {
     return findClaudeUserMessageElements(root).length;
   }
@@ -132,12 +414,24 @@
     return bestTurnCount > 0 || bestScore > 0 ? best : null;
   }
 
+  function getSemanticMessageRole(turnEl) {
+    if (!getClaudeMessagePosition(turnEl)) return "";
+    const heading = normalizeTextTrim(turnEl.querySelector("h2")?.textContent).toLowerCase();
+    if (heading.startsWith("you said:") || heading.includes("you said:")) return "user";
+    if (heading.startsWith("claude responded:") || heading.includes("claude responded:")) return "assistant";
+    if (turnEl.querySelector(".standard-markdown")) return "assistant";
+    if (countUserMessages(turnEl) > 0) return "user";
+    return "";
+  }
+
   function hasUserTurn(turnEl) {
-    return countUserMessages(turnEl) > 0;
+    return getSemanticMessageRole(turnEl) === "user" || countUserMessages(turnEl) > 0;
   }
 
   function hasAssistantTurn(turnEl) {
-    return Boolean(turnEl.querySelector(".standard-markdown")) || getClaudeStatusPanels(turnEl).length > 0;
+    return getSemanticMessageRole(turnEl) === "assistant" ||
+      Boolean(turnEl.querySelector(".standard-markdown")) ||
+      getClaudeStatusPanels(turnEl).length > 0;
   }
 
   function findFallbackUserTurnWrapper(userEl) {
@@ -149,6 +443,9 @@
   }
 
   function getConversationTurnContainers() {
+    const semanticArticles = getClaudeMessageArticles();
+    if (semanticArticles.length > 0) return semanticArticles;
+
     const root = findConversationColumn();
     if (!root) return [];
 
@@ -166,11 +463,25 @@
     return dedupeNodes(fallbackTurns.filter((el) => el && (hasUserTurn(el) || hasAssistantTurn(el))));
   }
 
+  function cloneSemanticMessageContent(turnEl) {
+    const clone = turnEl.cloneNode(true);
+    for (const el of Array.from(clone.querySelectorAll(
+      "h2,button,[role=status],[role=toolbar],time,.sr-only,.cdk-visually-hidden"
+    ))) {
+      el.remove();
+    }
+    return clone;
+  }
+
   function createUserTurn(turnEl) {
     return {
       role: "user",
       toMarkdown(converter) {
         const userEls = findClaudeUserMessageElements(turnEl);
+        if (userEls.length === 0 && getSemanticMessageRole(turnEl) === "user") {
+          return converter.convertElement(cloneSemanticMessageContent(turnEl)).trim();
+        }
+
         let md = "";
 
         for (const userEl of userEls) {
@@ -207,6 +518,10 @@
             .map((el) => ({ type: "dom", el })),
           ...getClaudeStatusPanels(turnEl).map((el) => ({ type: "execution", el }))
         ];
+
+        if (items.length === 0 && getSemanticMessageRole(turnEl) === "assistant") {
+          return converter.convertElement(cloneSemanticMessageContent(turnEl)).trim();
+        }
 
         items.sort((a, b) => compareDomOrder(a.el, b.el));
 

@@ -23,6 +23,7 @@
       const preparedForCurrentConversation =
         extractionState.conversationId === targetConversationId;
       return Boolean(
+        targetConversationId ||
         (preparedForCurrentConversation && extractionState.canonicalTurns?.length) ||
         (preparedForCurrentConversation && extractionState.fallbackContainers?.length) ||
         getConversationTurnContainers().length
@@ -38,8 +39,11 @@
       return (preparedForCurrentConversation && extractionState.title) || document.title || "ChatGPT Conversation";
     },
 
-    getSelectionStatus() {
-      return selectionController.getStatus();
+    getSelectionStatus(options = {}) {
+      const targetConversationId = ns.chatGptData.getConversationId(
+        options.conversationUrl || location.href
+      );
+      return selectionController.getStatus(targetConversationId);
     },
 
     async prepareForExtraction(options = {}) {
@@ -67,7 +71,7 @@
         turns = preparedDomTurns;
       }
 
-      return selectionController.filterTurns(turns);
+      return selectionController.filterTurns(turns, targetConversationId);
     },
 
     initSidebarIntegration(onDownloadClick) {
@@ -83,44 +87,55 @@
         (event) => {
           const selection = getSidebarSelectionFromEventTarget(event.target);
           if (selection) lastSidebarSelection = selection;
+
+          const target = event.target?.nodeType === Node.ELEMENT_NODE ? event.target : null;
+          if (target?.closest?.('button[aria-label="More"]')) {
+            for (const delay of [0, 75, 250]) {
+              setTimeout(() => processMenusFromNode(document.body), delay);
+            }
+          }
         },
         true
       );
 
+      const processMenusFromNode = (node) => {
+        for (const menu of ns.menuUtils.findMenusFromNode(node)) {
+          ns.menuUtils.injectDownloadIntoMenu({
+            menuEl: menu,
+            getSelection: () =>
+              getSidebarSelectionFromMenu(menu) ||
+              getCurrentConversationSelection() ||
+              lastSidebarSelection,
+            isLikelyConversationMenu,
+            onDownloadClick
+          });
+        }
+      };
+
       const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
+          if (mutation.type === "attributes") {
+            processMenusFromNode(mutation.target);
+          }
+
           for (const node of Array.from(mutation.addedNodes || [])) {
-            if (!node || node.nodeType !== Node.ELEMENT_NODE) continue;
-            const el = node;
-            const menus = new Set();
-
-            if (el.getAttribute?.("role") === "menu") {
-              menus.add(el);
-            }
-
-            const parentMenu = el.closest?.('[role="menu"]');
-            if (parentMenu) menus.add(parentMenu);
-
-            for (const menu of Array.from(el.querySelectorAll?.('[role="menu"]') || [])) {
-              menus.add(menu);
-            }
-
-            for (const menu of menus) {
-              ns.menuUtils.injectDownloadIntoMenu({
-                menuEl: menu,
-                getSelection: () =>
-                  getSidebarSelectionFromMenu(menu) ||
-                  getCurrentConversationSelection() ||
-                  lastSidebarSelection,
-                isLikelyConversationMenu,
-                onDownloadClick
-              });
-            }
+            processMenusFromNode(node);
           }
         }
       });
 
-      observer.observe(document.body, { childList: true, subtree: true });
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ["aria-hidden", "data-state", "hidden"],
+        childList: true,
+        subtree: true
+      });
+      processMenusFromNode(document.body);
+      for (const item of Array.from(document.body.querySelectorAll(
+        '[role="menu"],button,a,[role="button"],[data-radix-collection-item],[tabindex]'
+      ))) {
+        processMenusFromNode(item);
+      }
     }
   };
 
@@ -236,6 +251,13 @@
       }
 
       if (!domTurn) return canonicalTurn;
+      if (domTurn.sourceKind === "modern") {
+        return {
+          ...canonicalTurn,
+          anchorEl: domTurn.anchorEl,
+          checkboxAnchorEl: domTurn.checkboxAnchorEl
+        };
+      }
       return {
         ...domTurn,
         id: canonicalTurn.id,
@@ -273,7 +295,23 @@
 
   function getTurnIndex(container) {
     const testId = container?.getAttribute?.("data-testid") || "";
-    return Number(testId.match(/^conversation-turn-(\d+)$/)?.[1] || 0);
+    const legacyIndex = Number(testId.match(/^conversation-turn-(\d+)$/)?.[1] || 0);
+    if (legacyIndex) return legacyIndex;
+
+    const role = getModernTurnRole(container);
+    const body = getModernTurnBody(container);
+    const unitKey = String(
+      body?.getAttribute?.("data-chatgpt-search-unit-key") ||
+      container?.getAttribute?.("data-chatgpt-search-unit-key") ||
+      ""
+    );
+    const groupKey = String(
+      container?.closest?.("[data-content-search-turn-key]")?.getAttribute("data-content-search-turn-key") ||
+      ""
+    );
+    const groupIndex = (unitKey || groupKey).match(/^fallback-turn-(\d+)/)?.[1];
+    if (!role || groupIndex === undefined) return 0;
+    return Number(groupIndex) * 2 + (role === "assistant" ? 2 : 1);
   }
 
   function getTurnSnapshotKey(container) {
@@ -284,6 +322,12 @@
       .map((message) => String(message.getAttribute("data-message-id") || "").trim())
       .filter(Boolean);
     if (messageIds.length > 0) return `messages:${Array.from(new Set(messageIds)).join("|")}`;
+
+    const modernRole = getModernTurnRole(container);
+    if (modernRole) {
+      const modernIds = getSourceMessageIds([getModernTurnBody(container)]);
+      if (modernIds.length > 0) return `messages:${modernRole}:${modernIds.join("|")}`;
+    }
 
     const testId = String(container?.getAttribute?.("data-testid") || "").trim();
     return testId ? `test:${testId}` : "";
@@ -371,7 +415,7 @@
       const indexes = containers.map(getTurnIndex).filter(Boolean);
       const firstIndex = indexes.length ? Math.min(...indexes) : 0;
       const signature = [
-        containers[0]?.getAttribute?.("data-turn-id") || "",
+        getTurnSnapshotKey(containers[0]) || "",
         Math.round(scroller.scrollHeight),
         Math.max(0, ...indexes)
       ].join(":");
@@ -432,7 +476,15 @@
   async function collectVirtualizedTurnContainers() {
     const scroller = findConversationScroller();
     if (!scroller) {
-      return getConversationTurnContainers().map((container) => container.cloneNode(true));
+      const containers = getConversationTurnContainers();
+      const indexes = containers.map(getTurnIndex).filter(Boolean);
+      if (indexes.length > 0) {
+        const expectedCount = Math.max(...indexes);
+        if (new Set(indexes).size !== expectedCount) {
+          throw new Error("ChatGPT did not render every conversation turn.");
+        }
+      }
+      return containers.map((container) => container.cloneNode(true));
     }
 
     const bottomOffset = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
@@ -474,19 +526,47 @@
     }
 
     const messageEls = Array.from(root.querySelectorAll("[data-message-author-role]"));
-    if (messageEls.length === 0) return [];
+    if (messageEls.length > 0) {
+      const turns = [];
+      const seen = new Set();
 
-    const turns = [];
-    const seen = new Set();
+      for (const msgEl of messageEls) {
+        const turnEl = msgEl.closest("article, [data-turn]") || msgEl;
+        if (seen.has(turnEl)) continue;
+        seen.add(turnEl);
+        turns.push(turnEl);
+      }
 
-    for (const msgEl of messageEls) {
-      const turnEl = msgEl.closest("article, [data-turn]") || msgEl;
-      if (seen.has(turnEl)) continue;
-      seen.add(turnEl);
-      turns.push(turnEl);
+      return turns;
     }
 
-    return turns;
+    const modernTurns = new Set();
+    for (const heading of root.querySelectorAll("h4")) {
+      const container = heading.parentElement;
+      if (container && getModernTurnRole(container)) modernTurns.add(container);
+    }
+    return Array.from(modernTurns).sort(compareDomOrder);
+  }
+
+  function getModernTurnBody(containerEl) {
+    return containerEl?.querySelector?.("h4")?.nextElementSibling || null;
+  }
+
+  function getModernTurnRole(containerEl) {
+    const heading = containerEl?.querySelector?.("h4");
+    const body = heading?.nextElementSibling;
+    if (!heading || !body || heading.parentElement !== containerEl) return "";
+
+    const headingRole = heading.getAttribute("data-conversation-role");
+    const unitKey = body.getAttribute("data-chatgpt-search-unit-key") ||
+      containerEl.getAttribute("data-chatgpt-search-unit-key") || "";
+    if (headingRole === "assistant" || unitKey.endsWith(":assistant")) return "assistant";
+    if (unitKey.endsWith(":user")) return "user";
+
+    const label = normalizeTextTrim(heading.textContent);
+    if (label === "You said:") return "user";
+    if (label === "ChatGPT said:") return "assistant";
+    return "";
   }
 
   function buildTurnsForContainer(containerEl) {
@@ -495,7 +575,11 @@
       ...(containerEl.matches("[data-message-author-role]") ? [containerEl] : []),
       ...Array.from(containerEl.querySelectorAll("[data-message-author-role]"))
     ];
-    if (messageEls.length === 0) return [];
+    if (messageEls.length === 0) {
+      const modernRole = getModernTurnRole(containerEl);
+      const body = getModernTurnBody(containerEl);
+      return modernRole && body ? [createModernTurn(containerEl, body, modernRole)] : [];
+    }
 
     if (turnRole === "user") {
       const userMsgs = messageEls.filter((m) => m.getAttribute("data-message-author-role") === "user");
@@ -508,6 +592,38 @@
     }
 
     return messageEls.map((msgEl) => createFallbackTurn(msgEl));
+  }
+
+  function createModernTurn(containerEl, bodyEl, role) {
+    const sourceMessageIds = getSourceMessageIds([bodyEl]);
+    return {
+      id: makeTurnId(role, containerEl, [bodyEl]),
+      role,
+      sourceKind: "modern",
+      canonicalTurnId: "",
+      sourceMessageIds,
+      anchorEl: bodyEl,
+      checkboxAnchorEl: role === "user"
+        ? getUserCheckboxAnchor(containerEl, [bodyEl])
+        : getAssistantCheckboxAnchor(containerEl, [bodyEl]),
+      toMarkdown(converter) {
+        if (role === "assistant") {
+          const markdownEl = bodyEl.querySelector('[class*="MarkdownRoot"]') ||
+            bodyEl.querySelector(".markdown") || bodyEl.firstElementChild || bodyEl;
+          return converter.convertElement(markdownEl).trim();
+        }
+
+        const parts = [];
+        const textEl = bodyEl.querySelector(".whitespace-pre-wrap");
+        const text = (textEl?.textContent || bodyEl.textContent || "").trim();
+        if (text) parts.push(text);
+        for (const img of Array.from(bodyEl.querySelectorAll("img")).filter(ns.isLikelyContentImage)) {
+          const markdown = converter.convertElement(img).trim();
+          if (markdown) parts.push(markdown);
+        }
+        return parts.join("\n\n");
+      }
+    };
   }
 
   function createUserTurn(userMsgs, anchorEl) {
@@ -735,16 +851,23 @@
   }
 
   function getSourceMessageIds(messageEls) {
-    return Array.from(
-      new Set(
-        (messageEls || [])
-          .map((el) => String(el?.getAttribute?.("data-message-id") || "").trim())
-          .filter(Boolean)
-      )
-    );
+    const ids = [];
+    for (const el of messageEls || []) {
+      for (const attribute of [
+        "data-message-id",
+        "data-chatgpt-selection-message-id",
+        "data-chatgpt-search-message-ids"
+      ]) {
+        ids.push(...String(el?.getAttribute?.(attribute) || "").trim().split(/\s+/).filter(Boolean));
+      }
+    }
+    return Array.from(new Set(ids));
   }
 
   function makeTurnId(role, anchorEl, messageEls) {
+    const sourceIds = getSourceMessageIds(messageEls);
+    if (sourceIds.length > 0) return `${role}:${sourceIds.join("|")}`;
+
     const parts = [];
 
     for (const el of messageEls || []) {
@@ -796,10 +919,12 @@
     const state = {
       initialized: false,
       active: false,
+      conversationId: "",
       menuOpen: false,
       defaultChecked: true,
       knownIds: new Set(),
       selectedIds: new Set(),
+      sourceIdsByTurnId: new Map(),
       rafId: 0,
       checkboxEls: new Map(),
       buttonEl: null,
@@ -828,8 +953,9 @@
       scheduleRender();
     }
 
-    function getStatus() {
-      if (!state.active) {
+    function getStatus(targetConversationId) {
+      resetForNavigation();
+      if (!state.active || (targetConversationId && targetConversationId !== state.conversationId)) {
         return { active: false, selectedCount: 0 };
       }
 
@@ -837,10 +963,22 @@
       return { active: true, selectedCount: state.selectedIds.size };
     }
 
-    function filterTurns(turns) {
-      if (!state.active) return turns;
+    function filterTurns(turns, targetConversationId) {
+      resetForNavigation();
+      if (!state.active || (targetConversationId && targetConversationId !== state.conversationId)) {
+        return turns;
+      }
       syncSelectionWithTurns(turns);
-      return turns.filter((turn) => state.selectedIds.has(turn.id));
+      const selectedMessageIds = new Set();
+      for (const id of state.selectedIds) {
+        for (const messageId of state.sourceIdsByTurnId.get(id) || []) {
+          selectedMessageIds.add(messageId);
+        }
+      }
+      return turns.filter((turn) =>
+        state.selectedIds.has(turn.id) ||
+        (turn.sourceMessageIds || []).some((messageId) => selectedMessageIds.has(messageId))
+      );
     }
 
     function ensureStyles() {
@@ -1026,9 +1164,11 @@
 
     function activate(selectAll) {
       state.active = true;
+      state.conversationId = ns.chatGptData.getConversationId(location.href);
       state.defaultChecked = Boolean(selectAll);
       state.knownIds.clear();
       state.selectedIds.clear();
+      state.sourceIdsByTurnId.clear();
       syncSelectionWithTurns(buildChatGptTurns());
       closeMenu();
       scheduleRender();
@@ -1036,20 +1176,18 @@
 
     function activateLastReply() {
       const turns = buildChatGptTurns();
-      const currentIds = new Set(
-        turns
-          .map((turn) => turn?.id)
-          .filter(Boolean)
-      );
       const lastAssistantTurn = turns
         .slice()
         .reverse()
         .find((turn) => turn?.role === "assistant");
 
       state.active = true;
+      state.conversationId = ns.chatGptData.getConversationId(location.href);
       state.defaultChecked = false;
-      state.knownIds = currentIds;
+      state.knownIds.clear();
       state.selectedIds.clear();
+      state.sourceIdsByTurnId.clear();
+      syncSelectionWithTurns(turns);
 
       if (lastAssistantTurn?.id) {
         state.selectedIds.add(lastAssistantTurn.id);
@@ -1061,11 +1199,20 @@
 
     function deactivate() {
       state.active = false;
+      state.conversationId = "";
       state.defaultChecked = true;
       state.knownIds.clear();
       state.selectedIds.clear();
+      state.sourceIdsByTurnId.clear();
       closeMenu();
       scheduleRender();
+    }
+
+    function resetForNavigation() {
+      if (
+        state.active &&
+        state.conversationId !== ns.chatGptData.getConversationId(location.href)
+      ) deactivate();
     }
 
     function closeMenu() {
@@ -1089,13 +1236,10 @@
         }
       }
 
-      for (const id of Array.from(state.selectedIds)) {
-        if (!currentIds.has(id)) {
-          state.selectedIds.delete(id);
-        }
+      for (const turn of turns) {
+        if (turn?.id) state.sourceIdsByTurnId.set(turn.id, turn.sourceMessageIds || []);
       }
-
-      state.knownIds = currentIds;
+      for (const id of currentIds) state.knownIds.add(id);
     }
 
     function onPointerDown(event) {
@@ -1126,6 +1270,7 @@
     function render() {
       state.rafId = 0;
       ensureElements();
+      resetForNavigation();
 
       const turns = buildChatGptTurns();
       if (state.active) {

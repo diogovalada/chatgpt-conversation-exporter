@@ -4,20 +4,27 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const source = fs.readFileSync(
-  path.join(__dirname, "..", "content", "providers", "chatgpt.js"),
+  path.join(__dirname, "..", "content", "providers", "claude.js"),
   "utf8"
 );
 
-const root = {
-  querySelectorAll() {
-    return [];
-  }
-};
+const conversationId = "0dbdd9a5-0fde-4ece-97b2-478b38db0ea8";
 let registeredProvider = null;
+let payloadFetchCount = 0;
+
 const ChatExporter = {
   helpers: {
     compareDomOrder() {
       return 0;
+    },
+    dedupeNodes(nodes) {
+      return nodes;
+    },
+    findDescendantsByClassToken() {
+      return [];
+    },
+    isElement() {
+      return true;
     },
     normalizeTextTrim(value) {
       return String(value || "").trim();
@@ -26,37 +33,21 @@ const ChatExporter = {
       return body;
     }
   },
-  chatGptData: {
+  claudeData: {
     getConversationId() {
-      return "conversation-id";
+      return conversationId;
     },
     async fetchConversationPayload() {
+      payloadFetchCount += 1;
       return {
-        title: "Complete conversation",
-        current_node: "assistant-1",
-        mapping: {},
-        __chatExporterCoverageComplete: true
+        name: "Complete Claude conversation",
+        chat_messages: [{ uuid: "user-1" }, { uuid: "assistant-1" }]
       };
-    },
-    isActiveBranchComplete() {
-      return true;
     },
     buildTurnDescriptors() {
       return [
-        {
-          id: "user:user-1",
-          role: "user",
-          turnKey: "turn-user-1",
-          messageIds: ["user-1"],
-          messages: []
-        },
-        {
-          id: "assistant:assistant-1",
-          role: "assistant",
-          turnKey: "turn-assistant-1",
-          messageIds: ["assistant-1"],
-          messages: []
-        }
+        { id: "user:user-1", role: "user", messageIds: ["user-1"], messages: [] },
+        { id: "assistant:assistant-1", role: "assistant", messageIds: ["assistant-1"], messages: [] }
       ];
     },
     renderTurnDescriptor(descriptor) {
@@ -72,14 +63,16 @@ vm.runInNewContext(source, {
   window: { ChatExporter },
   document: {
     title: "Document title",
-    body: root,
     querySelector() {
-      return root;
+      throw new Error("The API fast path must not inspect the DOM.");
+    },
+    querySelectorAll() {
+      throw new Error("The API fast path must not inspect the DOM.");
     }
   },
   location: {
-    href: "https://chatgpt.com/c/conversation-id",
-    origin: "https://chatgpt.com"
+    href: `https://claude.ai/chat/${conversationId}`,
+    origin: "https://claude.ai"
   },
   URL,
   Set,
@@ -88,18 +81,18 @@ vm.runInNewContext(source, {
 
 (async () => {
   assert.ok(registeredProvider);
-  assert.equal(registeredProvider.hasConversation(), true);
   await registeredProvider.prepareForExtraction({
-    conversationUrl: "https://chatgpt.com/c/conversation-id"
+    conversationUrl: `https://claude.ai/chat/${conversationId}`
   });
 
+  assert.equal(payloadFetchCount, 1);
   assert.equal(registeredProvider.hasConversation(), true);
-  assert.equal(registeredProvider.getTitle(), "Complete conversation");
+  assert.equal(registeredProvider.getTitle(), "Complete Claude conversation");
   assert.deepEqual(
     Array.from(registeredProvider.getTurns(), (turn) => turn.role),
     ["user", "assistant"]
   );
-  console.log("chatgpt provider fast-path tests passed");
+  console.log("claude provider fast-path tests passed");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
