@@ -718,6 +718,18 @@
           if (!block?.el || seen.has(block.el)) continue;
           seen.add(block.el);
 
+          const reasoningSection = block.type === "collapsible" &&
+            /^(?:thought|thinking|reasoning)\b/i.test(block.section.summary);
+          if (!converter.includeToolActivity && block.type !== "assistant_message" && !reasoningSection) {
+            if (block.section?.bodyEl) {
+              for (const img of Array.from(block.section.bodyEl.querySelectorAll("img")).filter(ns.isLikelyContentImage)) {
+                const imageMarkdown = converter.convertElement(img).trim();
+                if (imageMarkdown) md += `${imageMarkdown}\n\n`;
+              }
+            }
+            continue;
+          }
+
           if (block.type === "collapsible") {
             const chunk = renderChatGptCollapsibleSection(block.section, converter);
             if (chunk) md += `${chunk}\n\n`;

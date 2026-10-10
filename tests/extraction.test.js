@@ -46,8 +46,9 @@ const ChatExporter = {
   getActiveProvider() {
     return provider;
   },
-  createMarkdownConverter() {
-    return {};
+  createMarkdownConverter(options) {
+    assert.equal(options.includeToolActivity, false);
+    return { includeToolActivity: options.includeToolActivity };
   }
 };
 

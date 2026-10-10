@@ -1,4 +1,4 @@
-const STORAGE_KEY = "chatgpt_md_downloader_settings";
+const settingsApi = globalThis.ChatExporterSettings;
 
 function setAppName(text) {
   const el = document.getElementById("appName");
@@ -68,16 +68,16 @@ async function ping(tabId, { attempts = 8, delayMs = 350 } = {}) {
 }
 
 async function loadSettings() {
-  const res = await chrome.storage.local.get({ [STORAGE_KEY]: { downloadImages: false } });
-  return res[STORAGE_KEY];
+  return settingsApi.load(chrome.storage.local);
 }
 
 async function saveSettings(settings) {
-  await chrome.storage.local.set({ [STORAGE_KEY]: settings });
+  await settingsApi.save(chrome.storage.local, settings);
 }
 
 async function main() {
   const downloadImagesEl = document.getElementById("downloadImages");
+  const includeToolActivityEl = document.getElementById("includeToolActivity");
   const copyMarkdownEl = document.getElementById("copyMarkdown");
   const saveDownloadsEl = document.getElementById("saveDownloads");
   const saveAsEl = document.getElementById("saveAs");
@@ -89,10 +89,26 @@ async function main() {
 
   const settings = await loadSettings();
   downloadImagesEl.checked = Boolean(settings.downloadImages);
+  includeToolActivityEl.checked = Boolean(settings.includeToolActivity);
 
-  downloadImagesEl.addEventListener("change", async () => {
-    await saveSettings({ downloadImages: downloadImagesEl.checked });
+  const exportOptions = () => ({
+    downloadImages: downloadImagesEl.checked,
+    includeToolActivity: includeToolActivityEl.checked
   });
+  settingsApi.watch(chrome.storage.local, chrome.storage.onChanged, (updated) => {
+    downloadImagesEl.checked = updated.downloadImages;
+    includeToolActivityEl.checked = updated.includeToolActivity;
+  });
+  for (const [field, checkbox] of [["downloadImages", downloadImagesEl], ["includeToolActivity", includeToolActivityEl]]) {
+    checkbox.addEventListener("change", async () => {
+      try {
+        await saveSettings({ [field]: checkbox.checked });
+      } catch (err) {
+        setStatus(`Failed to save settings: ${String(err?.message ?? err)}`);
+        setStatusError(true);
+      }
+    });
+  }
 
   const tabId = await getActiveTabId();
   if (!tabId) {
@@ -124,7 +140,7 @@ async function main() {
     try {
       const extraction = await chrome.tabs.sendMessage(tabId, {
         type: "EXTRACT_CONVERSATION",
-        options: { downloadImages: false }
+        options: { ...exportOptions(), downloadImages: false }
       });
 
       if (!extraction?.ok) {
@@ -157,11 +173,10 @@ async function main() {
     setStatusError(false);
 
     try {
-      const downloadImages = downloadImagesEl.checked;
       const res = await chrome.runtime.sendMessage({
         type: "EXPORT_CONVERSATION",
         saveAs: false,
-        downloadImages
+        ...exportOptions()
       });
       setStatus(res?.ok ? "Downloaded." : `Failed: ${res?.error ?? "unknown error"}`);
       setStatusError(!res?.ok);
@@ -179,11 +194,10 @@ async function main() {
     setStatusError(false);
 
     try {
-      const downloadImages = downloadImagesEl.checked;
       const res = await chrome.runtime.sendMessage({
         type: "EXPORT_CONVERSATION",
         saveAs: true,
-        downloadImages
+        ...exportOptions()
       });
       setStatus(res?.ok ? "Saved." : `Failed: ${res?.error ?? "unknown error"}`);
       setStatusError(!res?.ok);

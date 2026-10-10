@@ -64,7 +64,7 @@
     return `image-${n}`;
   }
 
-  function createMarkdownConverter({ downloadImages, imageFolder, imageCollector }) {
+  function createMarkdownConverter({ downloadImages, includeToolActivity = false, imageFolder, imageCollector }) {
     const linkDest = (raw) => `<${encodeURI(String(raw ?? ""))}>`;
 
     function convertImage({ url, alt = "" }) {
@@ -267,6 +267,7 @@
     }
 
     return {
+      includeToolActivity: Boolean(includeToolActivity),
       convertElement: (el) => convertNode(el, { inInline: false, inPre: false, listDepth: 0 }),
       convertImage
     };

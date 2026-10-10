@@ -162,12 +162,14 @@ async function extractConversationFromUrl({
   url,
   title,
   downloadImages,
+  includeToolActivity,
   sourceTabId
 }) {
   if (isChatGptUrl(url) && await canExtractChatGptFromSourceTab(sourceTabId)) {
     const extraction = await extractFromTab(sourceTabId, {
       conversationUrl: url,
       downloadImages: Boolean(downloadImages),
+      includeToolActivity: Boolean(includeToolActivity),
       titleOverride: title
     });
     if (!extraction?.ok) {
@@ -186,6 +188,7 @@ async function extractConversationFromUrl({
 
     const extraction = await extractFromTab(tabId, {
       downloadImages: Boolean(downloadImages),
+      includeToolActivity: Boolean(includeToolActivity),
       titleOverride: title
     });
 
@@ -200,11 +203,12 @@ async function extractConversationFromUrl({
   }
 }
 
-async function getMarkdownFromUrl({ url, title, sourceTabId }) {
+async function getMarkdownFromUrl({ url, title, includeToolActivity, sourceTabId }) {
   const extraction = await extractConversationFromUrl({
     url,
     title,
     downloadImages: false,
+    includeToolActivity,
     sourceTabId
   });
 
@@ -219,12 +223,14 @@ async function exportConversationFromUrl({
   title,
   saveAs,
   downloadImages,
+  includeToolActivity,
   sourceTabId
 }) {
   const extraction = await extractConversationFromUrl({
     url,
     title,
     downloadImages,
+    includeToolActivity,
     sourceTabId
   });
 
@@ -260,7 +266,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const title = String(message.title || "") || "AI Conversation";
-      const res = await getMarkdownFromUrl({ url, title, sourceTabId: sender.tab?.id });
+      const res = await getMarkdownFromUrl({
+        url, title, includeToolActivity: Boolean(message.includeToolActivity), sourceTabId: sender.tab?.id
+      });
       sendResponse(res);
       return;
     }
@@ -274,7 +282,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       let extraction;
       try {
-        extraction = await extractFromTab(tabId, { downloadImages: false });
+        extraction = await extractFromTab(tabId, {
+          downloadImages: false,
+          includeToolActivity: Boolean(message.includeToolActivity)
+        });
       } catch {
         sendResponse({ ok: false, error: "This page is not supported (content script not available)." });
         return;
@@ -304,6 +315,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         title,
         saveAs: Boolean(message.saveAs),
         downloadImages: Boolean(message.downloadImages),
+        includeToolActivity: Boolean(message.includeToolActivity),
         sourceTabId: sender.tab?.id
       });
       sendResponse(result);
@@ -323,7 +335,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     let extraction;
     try {
-      extraction = await extractFromTab(tabId, { downloadImages: Boolean(message.downloadImages) });
+      extraction = await extractFromTab(tabId, {
+        downloadImages: Boolean(message.downloadImages),
+        includeToolActivity: Boolean(message.includeToolActivity)
+      });
     } catch {
       sendResponse({ ok: false, error: "This page is not supported (content script not available)." });
       return;
@@ -355,7 +370,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const mdUrl = dataUrlForMarkdown(markdown);
     await chrome.downloads.download({ url: mdUrl, filename, saveAs: Boolean(message.saveAs) });
 
-    sendResponse({ ok: true });
+    sendResponse({ ok: true, bundled: "md" });
   })().catch((err) => {
     sendResponse({ ok: false, error: String(err?.message ?? err) });
   });

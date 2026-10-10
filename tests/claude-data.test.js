@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const createClaudeContext = require("./helpers/claude-context.js");
 
 const source = fs.readFileSync(
   path.join(__dirname, "..", "content", "providers", "claude-data.js"),
@@ -96,15 +97,12 @@ function response(status, payload) {
     ]
   };
 
-  const context = vm.createContext({
-    URL,
-    console,
-    encodeURIComponent,
+  const { context } = createClaudeContext({
     location: {
       href: "https://claude.ai/chat/0dbdd9a5-0fde-4ece-97b2-478b38db0ea8",
       origin: "https://claude.ai"
     },
-    window: { ChatExporter },
+    ChatExporter,
     fetch: async (url, options) => {
       requests.push({ url: String(url), options });
       if (String(url).endsWith("/api/organizations")) {
@@ -130,6 +128,7 @@ function response(status, payload) {
   assert.ok(!turns.some((turn) => turn.messageIds.includes("abandoned-assistant")));
 
   const converter = {
+    includeToolActivity: true,
     convertImage({ url, alt }) {
       return `![${alt}](<${url}>)`;
     }

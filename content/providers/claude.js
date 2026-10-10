@@ -21,8 +21,13 @@
     id: "claude",
     name: "Claude",
 
+    matchesUrl: (url) => Boolean(ns.claudeData.getConversationId(url)),
+
     hasConversation(options = {}) {
+      if (ns.claudeCodeData?.getSessionId(options.conversationUrl || location.href)) return false;
       const conversationId = ns.claudeData.getConversationId(options.conversationUrl || location.href);
+      // A supported route can be exported through the API before any messages mount.
+      if (conversationId) return true;
       const preparedForCurrentConversation = extractionState.conversationId === conversationId;
       return Boolean(
         (preparedForCurrentConversation && extractionState.canonicalTurns?.length) ||
@@ -175,6 +180,15 @@
   }
 
   function getClaudeMessagePosition(article) {
+    const ariaIndex = String(article?.getAttribute?.("aria-posinset") || "");
+    const ariaTotal = String(article?.getAttribute?.("aria-setsize") || "");
+    if (/^[1-9]\d*$/.test(ariaIndex) && /^[1-9]\d*$/.test(ariaTotal)) {
+      const index = Number(ariaIndex);
+      const total = Number(ariaTotal);
+      if (Number.isSafeInteger(index) && Number.isSafeInteger(total) && index <= total) {
+        return { index, total };
+      }
+    }
     const label = String(article?.getAttribute?.("aria-label") || "");
     const numbers = label.match(/\d+/g) || [];
     if (numbers.length < 2) return null;
@@ -190,7 +204,8 @@
   function getClaudeMessageArticles(root = document) {
     const feed = root.matches?.('[role="feed"]') ? root : findClaudeMessageFeed(root);
     if (!feed) return [];
-    return Array.from(feed.querySelectorAll("article")).filter((article) => getClaudeMessagePosition(article));
+    return Array.from(feed.querySelectorAll('article, [role="article"]'))
+      .filter((article) => getClaudeMessagePosition(article));
   }
 
   function findLoadEarlierMessagesButton() {
@@ -509,7 +524,9 @@
       role: "assistant",
       toMarkdown(converter) {
         const items = [
-          ...Array.from(turnEl.querySelectorAll(".standard-markdown")).map((el) => ({ type: "dom", el })),
+          ...Array.from(turnEl.querySelectorAll(".standard-markdown"))
+            .filter((el) => converter.includeToolActivity || !findClaudeStatusPanel(el))
+            .map((el) => ({ type: "dom", el })),
           ...Array.from(turnEl.querySelectorAll("pre"))
             .filter((preEl) => !preEl.closest(".standard-markdown") && !findClaudeStatusPanel(preEl))
             .map((el) => ({ type: "dom", el })),
@@ -530,6 +547,14 @@
         for (const item of items) {
           if (!item?.el || seen.has(item.el)) continue;
           seen.add(item.el);
+
+          if (item.type === "execution" && !converter.includeToolActivity) {
+            for (const img of Array.from(item.el.querySelectorAll("img")).filter(ns.isLikelyContentImage)) {
+              const imageMarkdown = converter.convertElement(img).trim();
+              if (imageMarkdown) md += `${imageMarkdown}\n\n`;
+            }
+            continue;
+          }
 
           const chunk =
             item.type === "execution"
@@ -687,6 +712,8 @@
   }
 
   function isLikelyConversationMenu(menuItems) {
+    // A remembered normal-chat selection must not leak into a Code session menu.
+    if (ns.claudeCodeData?.getSessionId(location.href)) return false;
     const texts = menuItems.map((el) => normalizeTextTrim(el.textContent).toLowerCase());
     return texts.some((text) =>
       text.includes("rename") ||

@@ -52,7 +52,7 @@ Run the same source validation and tests used by CI:
 
 ```powershell
 node scripts/validate-extension.mjs .
-Get-ChildItem background.js,popup.js,content,scripts,tests -Recurse -File -Include *.js,*.mjs |
+Get-ChildItem background.js,popup.js,export-settings.js,content,scripts,tests -Recurse -File -Include *.js,*.mjs |
   ForEach-Object { node --check $_.FullName }
 Get-ChildItem tests\*.test.js | ForEach-Object { node $_.FullName }
 ```

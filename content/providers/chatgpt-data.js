@@ -508,14 +508,16 @@
     return converter.convertImage?.({ url, alt }) || `![${alt}](<${url}>)`;
   }
 
+  function isImagePart(part) {
+    if (!part || typeof part !== "object") return false;
+    const type = String(part.content_type || part.type || "").toLowerCase();
+    return Boolean(type.includes("image") || part.asset_pointer || part.assetPointer || part.image_url);
+  }
+
   function renderContentPart(part, converter) {
     if (typeof part === "string") return part.trim();
     if (!part || typeof part !== "object") return "";
-
-    const type = String(part.content_type || part.type || "").toLowerCase();
-    if (type.includes("image") || part.asset_pointer || part.assetPointer || part.image_url) {
-      return renderImagePart(part, converter);
-    }
+    if (isImagePart(part)) return renderImagePart(part, converter);
 
     const text = [part.text, part.content, part.output, part.result, part.transcript]
       .find((value) => typeof value === "string");
@@ -524,6 +526,15 @@
     const name = String(part.name || part.filename || "").trim();
     if (name) return `**Attachment:** ${name}`;
     return "";
+  }
+
+  function isToolActivityMessage(message) {
+    const role = String(message?.author?.role || "").toLowerCase();
+    if (role === "user") return false;
+    const recipient = String(message?.recipient || "").toLowerCase();
+    const type = String(message?.content?.content_type || "").toLowerCase();
+    return role === "tool" || (recipient && recipient !== "all") ||
+      type.includes("execution_output") || type === "computer_output";
   }
 
   function renderAttachments(message) {
@@ -541,18 +552,21 @@
     const content = message?.content || {};
     const type = String(content.content_type || "").toLowerCase();
     const parts = Array.isArray(content.parts) ? content.parts : [];
-    const renderedParts = parts.map((part) => renderContentPart(part, converter)).filter(Boolean);
+    const omitToolActivity = !converter.includeToolActivity && isToolActivityMessage(message);
+    const renderedParts = parts.map((part) => omitToolActivity
+      ? (isImagePart(part) ? renderImagePart(part, converter) : "")
+      : renderContentPart(part, converter)).filter(Boolean);
 
     let body = renderedParts.join("\n\n");
-    if (!body) {
+    if (!body && !omitToolActivity) {
       const directText = [content.text, content.content, content.output, content.result]
         .find((value) => typeof value === "string");
       body = String(directText || "").trim();
     }
 
-    if (type === "code" && body) {
+    if (!omitToolActivity && type === "code" && body) {
       body = fenceCode(body, content.language || content.lang || "");
-    } else if ((type.includes("execution_output") || type === "computer_output") && body) {
+    } else if (!omitToolActivity && (type.includes("execution_output") || type === "computer_output") && body) {
       body = `**Result:**\n\n${fenceCode(body, "text")}`;
     } else if ((type.includes("thought") || type.includes("reasoning")) && body) {
       body = ns.helpers.wrapCollapsibleSection("Reasoning", body);

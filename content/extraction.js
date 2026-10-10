@@ -15,7 +15,7 @@
   }
 
   async function extractConversation(options = {}) {
-    const provider = ns.getActiveProvider();
+    const provider = ns.getActiveProvider(options);
     if (!provider) {
       return { ok: false, error: "This page is not supported." };
     }
@@ -49,6 +49,7 @@
     const imageCollector = [];
     const converter = ns.createMarkdownConverter({
       downloadImages: Boolean(options.downloadImages),
+      includeToolActivity: Boolean(options.includeToolActivity),
       imageFolder,
       imageCollector
     });

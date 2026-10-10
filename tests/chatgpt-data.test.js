@@ -126,6 +126,7 @@ assert.equal(turns[1].messages.length, 3);
 assert.ok(!turns.some((turn) => turn.messageIds.includes("abandoned-message")));
 
 const converter = {
+  includeToolActivity: true,
   convertImage({ url, alt }) {
     return `![${alt}](<${url}>)`;
   }

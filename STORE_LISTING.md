@@ -20,6 +20,8 @@ AI Conversation Exporter supports ChatGPT and Claude and preserves common conver
 
 Enable image downloads to receive one ZIP containing the Markdown file and its local image assets. Otherwise, the extension creates a standalone Markdown file with the original image links.
 
+Claude Code web sessions are also supported through the extension toolbar icon. Enable **Include tool activity** to retain tool commands, results and subagent transcripts. Both optional settings start unchecked, and your choices are remembered locally.
+
 Conversation processing happens locally in your browser. The developer does not receive or retain your conversation content, and the extension includes no analytics, advertising, or tracking.
 
 This extension is not affiliated with, endorsed by, or sponsored by OpenAI or Anthropic.
@@ -36,7 +38,7 @@ Required to save the Markdown or ZIP file explicitly requested by the user to th
 
 **Permission justification: storage**
 
-Required to remember the user's local export preference for whether images should be downloaded. Conversation content is not stored in extension storage.
+Required to remember the user's local export preferences for image downloads and tool activity. Conversation content is not stored in extension storage.
 
 **Host permission justification: chatgpt.com and chat.openai.com**
 
@@ -48,7 +50,7 @@ Required only when the user enables image downloading, so ChatGPT-hosted images 
 
 **Host permission justification: claude.ai**
 
-Required to add the export controls and read only the Claude conversation selected by the user.
+Required to add the export controls and read only the Claude conversation or Claude Code web session selected by the user through Claude's authenticated first-party API.
 
 **Host permission justification: assets-proxy.anthropic.com**
 
@@ -83,5 +85,7 @@ https://github.com/diogovalada/chatgpt-conversation-exporter/issues
 3. Enable **Download images** and repeat with a conversation containing an image. Confirm that a ZIP is downloaded with the Markdown file and an assets folder.
 4. On ChatGPT, click **Select**, choose a selection preset or individual checkboxes, and export. Confirm that only selected messages are included.
 5. On ChatGPT, open a conversation's three-dot menu in the sidebar, project home, or conversation header and click **Download**. Confirm that the corresponding conversation is exported.
+6. In a conversation with tool use, export with **Include tool activity** off and on. Confirm that tool transcripts appear only when enabled while normal messages, code and images remain in both exports.
+7. If Claude Code web access is available, open a `/code/session_...` session and export using the toolbar icon. Confirm the opening prompt and final reply are included.
 
 No separate test account or credentials are supplied. Reviewers may use their own ChatGPT or Claude account because the extension does not provide or bypass access to either service.

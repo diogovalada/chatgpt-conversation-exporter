@@ -15,12 +15,22 @@
 
       <div class="row">
         <label class="checkbox">
-          <input type="checkbox" id="downloadImages" />
+          <input type="checkbox" id="downloadImages" aria-describedby="imagesHint" />
           Download images (bundles as .zip)
         </label>
       </div>
       <div class="hint" id="imagesHint">
         When enabled, you will download a single .zip containing the .md and an assets folder.
+      </div>
+
+      <div class="row">
+        <label class="checkbox">
+          <input type="checkbox" id="includeToolActivity" aria-describedby="toolsHint" />
+          Include tool activity
+        </label>
+      </div>
+      <div class="hint" id="toolsHint">
+        Include tool commands and results. These can greatly increase the export size.
       </div>
 
       <div class="row">
@@ -33,6 +43,7 @@
       </div>
     </main>
 
+    <script src="export-settings.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

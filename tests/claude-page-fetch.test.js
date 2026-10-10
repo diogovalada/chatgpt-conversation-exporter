@@ -81,6 +81,37 @@ async function flushAsyncWork() {
   assert.equal(requests.length, 1);
   assert.equal(posted.at(-1).ok, false);
 
+  const codeUrl = "https://claude.ai/v1/code/sessions/session_Test123/events?limit=500&sort_order=asc&cursor=a%2Bb";
+  const organizationId = "11111111-1111-4111-8111-111111111111";
+  async function request(url, extra = {}) {
+    messageListener({ source: window, data: {
+      type: "CHAT_EXPORTER_CLAUDE_PAGE_FETCH_REQUEST", requestId: "code-request", url, ...extra
+    } });
+    await flushAsyncWork();
+  }
+  await request(codeUrl, { organizationId });
+  assert.equal(requests.length, 2);
+  assert.equal(posted.at(-1).ok, true);
+  assert.equal(requests.at(-1).options.headers["x-organization-uuid"], organizationId);
+  assert.equal(requests.at(-1).options.headers["anthropic-beta"], "ccr-byoc-2025-07-29");
+  assert.equal(requests.at(-1).options.method, undefined, "bridge is GET-only");
+  for (const [url, extra] of [
+    [codeUrl, {}],
+    [codeUrl, { organizationId: "org\r\nInjected: yes" }],
+    [codeUrl.replace("claude.ai", "example.org"), { organizationId }],
+    [codeUrl.replace("/events?", "/files?"), { organizationId }],
+    [codeUrl.replace("/events?", "/archive?"), { organizationId }],
+    [codeUrl.replace("limit=500", "limit=99999"), { organizationId }],
+    [codeUrl.replace("sort_order=asc", "sort_order=invalid"), { organizationId }],
+    [codeUrl + "&extra=1", { organizationId }],
+    [codeUrl.replace("/events?", "?"), { organizationId }],
+    [codeUrl.replace("https://", "https://user:pass@"), { organizationId }]
+  ]) {
+    await request(url, extra);
+    assert.equal(posted.at(-1).ok, false, url);
+    assert.equal(requests.length, 2, "rejected requests must not reach fetch");
+  }
+
   console.log("claude-page-fetch tests passed");
 })().catch((error) => {
   console.error(error);

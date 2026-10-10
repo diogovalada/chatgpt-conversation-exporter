@@ -2,107 +2,21 @@
   const ns = window.ChatExporter;
   const { normalizeTextTrim, wrapCollapsibleSection } = ns.helpers;
 
-  const PAGE_FETCH_REQUEST = "CHAT_EXPORTER_CLAUDE_PAGE_FETCH_REQUEST";
-  const PAGE_FETCH_RESPONSE = "CHAT_EXPORTER_CLAUDE_PAGE_FETCH_RESPONSE";
-
   function getConversationId(url = location.href) {
     try {
-      const pathname = new URL(url, location.href).pathname;
-      return pathname.match(/\/chat\/([0-9a-f-]{12,})/i)?.[1] || "";
+      const parsed = new URL(url, location.href);
+      if (parsed.origin !== "https://claude.ai") return "";
+      return parsed.pathname.match(/^\/chat\/([0-9a-f-]{12,})\/?$/i)?.[1] || "";
     } catch {
       return "";
     }
-  }
-
-  async function fetchJsonDirect(url) {
-    const response = await fetch(url, {
-      credentials: "include",
-      cache: "no-store",
-      headers: { accept: "application/json" }
-    });
-
-    if (!response.ok) {
-      const error = new Error(`Claude data request failed (${response.status}).`);
-      error.status = response.status;
-      throw error;
-    }
-
-    return response.json();
-  }
-
-  function makeRequestId() {
-    const randomId = globalThis.crypto?.randomUUID?.();
-    return randomId || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
-
-  function fetchJsonFromPage(url) {
-    if (typeof window.addEventListener !== "function" || typeof window.postMessage !== "function") {
-      return fetchJsonDirect(url);
-    }
-
-    return new Promise((resolve, reject) => {
-      const requestId = makeRequestId();
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error("Claude data request timed out."));
-      }, 30_000);
-
-      function cleanup() {
-        clearTimeout(timeoutId);
-        window.removeEventListener("message", onMessage);
-      }
-
-      function onMessage(event) {
-        const response = event.data;
-        if (
-          event.source !== window ||
-          response?.type !== PAGE_FETCH_RESPONSE ||
-          response.requestId !== requestId
-        ) {
-          return;
-        }
-
-        cleanup();
-        if (!response.ok) {
-          const error = new Error(
-            response.error || `Claude data request failed (${response.status || 0}).`
-          );
-          error.status = response.status || 0;
-          reject(error);
-          return;
-        }
-        resolve(response.payload);
-      }
-
-      window.addEventListener("message", onMessage);
-      window.postMessage({
-        type: PAGE_FETCH_REQUEST,
-        requestId,
-        url: String(url)
-      }, location.origin);
-    });
-  }
-
-  function getOrganizations(payload) {
-    if (Array.isArray(payload)) return payload;
-    if (Array.isArray(payload?.organizations)) return payload.organizations;
-    if (Array.isArray(payload?.data)) return payload.data;
-    return [];
   }
 
   async function fetchConversationPayload(url = location.href) {
     const conversationId = getConversationId(url);
     if (!conversationId) throw new Error("Claude conversation ID was not found in the URL.");
 
-    const organizationsUrl = new URL("/api/organizations", location.origin);
-    const organizations = getOrganizations(await fetchJsonFromPage(organizationsUrl.href));
-    const organizationIds = organizations
-      .map((organization) => String(organization?.uuid || organization?.id || "").trim())
-      .filter(Boolean);
-
-    if (organizationIds.length === 0) {
-      throw new Error("Claude did not return an organization for the current session.");
-    }
+    const organizationIds = await ns.claudeApi.getOrganizationIds();
 
     let lastError = null;
     for (const organizationId of organizationIds) {
@@ -116,7 +30,7 @@
       conversationUrl.searchParams.set("consistency", "strong");
 
       try {
-        const payload = await fetchJsonFromPage(conversationUrl.href);
+        const payload = await ns.claudeApi.fetchJson(conversationUrl.href);
         if (!Array.isArray(payload?.chat_messages)) {
           throw new Error("Claude returned an invalid conversation payload.");
         }
@@ -288,11 +202,12 @@
     return wrapCollapsibleSection(`Claude Artifact: ${title}`, body);
   }
 
-  function renderToolUse(block) {
+  function renderToolUse(block, converter) {
     if (String(block?.name || "").toLowerCase() === "artifacts") {
       const artifact = renderArtifact(block);
       if (artifact) return artifact;
     }
+    if (!converter.includeToolActivity) return "";
 
     const toolName = [block?.integration_name, block?.name]
       .map(normalizeTextTrim)
@@ -323,11 +238,39 @@
     return "";
   }
 
-  function renderToolResult(block) {
-    const result = extractToolResult(block);
+  function renderToolResult(block, converter, media) {
+    const content = block?.content;
+    const rawItems = Array.isArray(content) ? content : [];
+    const displayItems = Array.isArray(block?.display_content?.content) ? block.display_content.content : [];
+    const imageKeys = new Set();
+    const renderResultImage = (item) => {
+      const { url, file } = resolveImageBlock(item, media);
+      const keys = [url, getFileUrl(file)].filter(Boolean).map((value) => `url:${value}`);
+      for (const id of [item.file_uuid, item.source?.file_uuid, file?.uuid, file?.file_uuid, file?.id]) {
+        if (id) keys.push(`id:${id}`);
+      }
+      if (!keys.length) keys.push(JSON.stringify(item.source || item));
+      const duplicate = keys.some((key) => imageKeys.has(key));
+      keys.forEach((key) => imageKeys.add(key));
+      if (duplicate) return "";
+      return renderImageBlock(item, converter, media);
+    };
+    if (!converter.includeToolActivity) {
+      return [...rawItems, ...displayItems]
+        .filter((item) => item?.type === "image")
+        .map(renderResultImage).filter(Boolean).join("\n\n");
+    }
+    const result = Array.isArray(content) ? content.map((item) => {
+      if (item?.type === "image") return renderResultImage(item);
+      const text = typeof item === "string" ? item : item?.text || stringifyValue(item);
+      return text ? fenceCode(text, "text") : "";
+    }).filter(Boolean).join("\n\n") : extractToolResult(block);
+    const displayedImages = displayItems.filter((item) => item?.type === "image")
+      .map(renderResultImage).filter(Boolean).join("\n\n");
     const status = block?.is_error ? "Failed" : "Complete";
     const body = [
-      result ? `**Output:**\n\n${fenceCode(result, "text")}` : "",
+      result ? `**Output:**\n\n${Array.isArray(content) ? result : fenceCode(result, "text")}` : "",
+      displayedImages,
       `**Status:** ${status}`
     ].filter(Boolean).join("\n\n");
     return wrapCollapsibleSection("Claude Tool Result", body);
@@ -343,23 +286,51 @@
     }
   }
 
-  function renderImageBlock(block, converter) {
+  function getFileUrl(file) {
+    return normalizeAssetUrl(file?.preview_asset?.url || file?.preview_url || file?.download_url || file?.url);
+  }
+
+  function getFileName(file) {
+    return normalizeTextTrim(file?.file_name || file?.name) || "Claude file";
+  }
+
+  function resolveImageBlock(block, media) {
     const source = block?.source || {};
-    const url = normalizeAssetUrl(
-      block?.url || block?.image_url?.url || block?.image_url || source?.url || source?.preview_url
+    const embedded = source.type === "base64" && /^image\/(png|jpeg|gif|webp)$/.test(source.media_type || "") &&
+      typeof source.data === "string" ? `data:${source.media_type};base64,${source.data}` : "";
+    const blockUrl = normalizeAssetUrl(
+      embedded || block?.url || block?.image_url?.url || block?.image_url || source?.url || source?.preview_url
     );
-    if (!url) return "";
-    const alt = normalizeTextTrim(block?.alt || block?.name) || "Claude image";
+    const fileId = String(block?.file_uuid || source?.file_uuid || "").trim();
+    // Chat image blocks can carry only a UUID; their preview is in message.files.
+    const file = media.files.find((candidate) => {
+      const candidateUrl = getFileUrl(candidate);
+      const previewId = candidateUrl ? new URL(candidateUrl).pathname.match(/^\/api\/[^/]+\/files\/([^/]+)\/preview\/?$/)?.[1] : "";
+      return (fileId && [candidate?.uuid, candidate?.file_uuid, candidate?.id, previewId].includes(fileId)) ||
+        (blockUrl && candidateUrl === blockUrl);
+    });
+    const url = blockUrl || getFileUrl(file);
+    return { url, file };
+  }
+
+  function renderImageBlock(block, converter, media) {
+    const { url, file } = resolveImageBlock(block, media);
+    if (!url) return wrapCollapsibleSection("Claude image (unresolved)", fenceCode(stringifyValue(block), "json"));
+    media.imageUrls.add(url);
+    if (file) media.renderedFiles.add(file);
+    const alt = normalizeTextTrim(block?.alt || block?.name) || (file ? getFileName(file) : "Claude image");
     return converter.convertImage?.({ url, alt }) || `![${alt}](<${url}>)`;
   }
 
-  function renderContentBlock(block, converter) {
+  function renderContentBlock(block, converter, media) {
     const type = String(block?.type || "").toLowerCase();
+    if (media.toolActivity && !converter.includeToolActivity &&
+        !["image", "tool_use", "tool_result"].includes(type)) return "";
     if (type === "text") return renderTextBlock(block);
     if (type === "thinking") return renderThinkingBlock(block);
-    if (type === "tool_use") return renderToolUse(block);
-    if (type === "tool_result") return renderToolResult(block);
-    if (type === "image") return renderImageBlock(block, converter);
+    if (type === "tool_use") return renderToolUse(block, converter);
+    if (type === "tool_result") return renderToolResult(block, converter, media);
+    if (type === "image") return renderImageBlock(block, converter, media);
 
     const text = String(block?.text || "").trim();
     if (text) return text;
@@ -377,36 +348,43 @@
     }).join("\n\n");
   }
 
-  function renderFiles(message, converter) {
-    const files = Array.isArray(message?.files) ? message.files : [];
-    return files.map((file) => {
-      const name = normalizeTextTrim(file?.file_name || file?.name) || "Claude file";
-      const url = normalizeAssetUrl(
-        file?.preview_asset?.url || file?.preview_url || file?.download_url || file?.url
-      );
+  function renderFiles(converter, media) {
+    return media.files.map((file) => {
+      if (media.renderedFiles.has(file)) return "";
+      const name = getFileName(file);
+      const url = getFileUrl(file);
       const kind = String(file?.file_kind || file?.type || "").toLowerCase();
       const looksLikeImage = kind.includes("image") || /\.(?:avif|gif|jpe?g|png|webp)(?:$|\?)/i.test(url);
 
       if (url && looksLikeImage) {
+        if (media.imageUrls.has(url)) return "";
+        media.imageUrls.add(url);
         return converter.convertImage?.({ url, alt: name }) || `![${name}](<${url}>)`;
       }
       if (url) return `**Attachment:** [${name}](<${url}>)`;
       return `**Attachment:** ${name}`;
-    }).join("\n\n");
+    }).filter(Boolean).join("\n\n");
   }
 
   function renderMessage(message, converter) {
-    const blocks = messageContentBlocks(message)
-      .map((block) => renderContentBlock(block, converter))
+    const media = {
+      files: Array.isArray(message?.files) ? message.files : [],
+      toolActivity: Boolean(message?.toolActivity),
+      renderedFiles: new Set(),
+      imageUrls: new Set()
+    };
+    const content = messageContentBlocks(message);
+    const blocks = content
+      .map((block) => renderContentBlock(block, converter, media))
       .filter(Boolean);
 
-    if (blocks.length === 0) {
+    if (blocks.length === 0 && content.length === 0 && (!media.toolActivity || converter.includeToolActivity)) {
       const text = String(message?.text || "").trim();
       if (text) blocks.push(text);
     }
 
     const attachments = renderAttachments(message);
-    const files = renderFiles(message, converter);
+    const files = renderFiles(converter, media);
     return [...blocks, attachments, files].filter(Boolean).join("\n\n").trim();
   }
 

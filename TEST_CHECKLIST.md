@@ -10,6 +10,7 @@ The fixture conversation should include all of the following whenever the provid
 - User prompt containing Markdown-like characters such as `#`, `*`, backticks, pipes, and brackets
 - Non-English text and accented characters
 - User-uploaded image
+- Claude API image blocks containing only `file_uuid` resolve from `message.files`, in content order and without duplicate Markdown/ZIP assets
 - Multiple user-uploaded images in the same turn
 - Assistant response that describes the uploaded image
 - Assistant Markdown with headings, bold, italics, blockquotes, unordered lists, ordered lists, links, and tables
@@ -28,8 +29,27 @@ The fixture conversation should include all of the following whenever the provid
 - A pagination-complete ChatGPT API response exports without moving the conversation scroll position
 - A long Claude conversation where the DOM starts near the final messages but the authenticated API contains the opening prompt
 - A branched Claude conversation exports the lineage ending at `current_leaf_message_uuid`, not abandoned alternatives
+- A normal Claude `/chat/...` URL is recognized before messages mount, and the DOM fallback handles `div role="article"` with `aria-posinset`/`aria-setsize`
 
 ## Optional But Worth Testing
+
+### Claude Code Web Sessions
+
+- Export from the extension popup on `/code/session_...`, then navigate to a normal Claude chat and back without reloading
+- Verify the opening prompt and final reply in a session spanning several API event pages
+- Confirm extraction works with only the last message mounted and does not scroll the page
+- Check multiple assistant/tool messages form one answer, without counting tool results as user prompts
+- Include commands containing backticks, failed tools, nested tool-result images and base64 user images
+- Verify both Markdown image references and ZIP image assets
+- Include subagent activity and a context-compaction boundary/summary; preserve the earlier history
+- Repeat overlapping pages and echoed message IDs without duplicating messages
+- Interrupt/fail a later API page: report failure and do not save a partial transcript
+- Repeated cursors, malformed events and unfinished streamed messages must fail visibly
+- A multi-block stream must have a message stop, closed blocks and completed snapshots for every non-empty block, including across API pages
+- Tool-use summaries and subagent task notifications obey the tool-activity option while session errors and context summaries remain visible
+- Verify with a live session after reloading both the extension and the page; the test fixtures use synthetic data
+
+### Other Provider Cases
 
 These cases are provider-dependent. If the UI supports them, test and document the current behavior.
 
@@ -48,6 +68,13 @@ These cases are provider-dependent. If the UI supports them, test and document t
 - Popup export from an open conversation
 - Export with images disabled
 - Export with images enabled
+- New installations start with both **Download images** and **Include tool activity** unchecked
+- Preferences persist between popup and conversation-menu dialogs, including existing image preferences after upgrading
+- Simultaneously open dialogs stay synchronized; changing different flags concurrently must preserve both choices
+- Copy Markdown, Save to Downloads and Save As honor the tool-activity preference on all supported providers
+- With tool activity off, omit commands/results/subagent transcripts without removing ordinary code, math, images, attachments or Claude artifacts
+- Tool images in `display_content` are retained in both export modes, without duplicating media also represented in raw content or file metadata
+- With tool activity on, retain the detailed tool export and collapsed sections
 - `Save to Downloads`
 - `Save As...`
 - Sidebar conversation-menu export by URL

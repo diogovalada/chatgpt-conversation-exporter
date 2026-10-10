@@ -1,5 +1,6 @@
 (() => {
   const ns = window.ChatExporter;
+  let stopWatchingSettings = null;
 
   function ensureSidebarPanelStyles() {
     if (document.getElementById("chat-exporter-style")) return;
@@ -55,12 +56,11 @@
   }
 
   async function loadSettings() {
-    const res = await chrome.storage.local.get({ [ns.STORAGE_KEY]: { downloadImages: false } });
-    return res[ns.STORAGE_KEY];
+    return globalThis.ChatExporterSettings.load(chrome.storage.local);
   }
 
   async function saveSettings(settings) {
-    await chrome.storage.local.set({ [ns.STORAGE_KEY]: settings });
+    await globalThis.ChatExporterSettings.save(chrome.storage.local, settings);
   }
 
   function isExtensionContextInvalidated(error) {
@@ -68,6 +68,8 @@
   }
 
   function closeSidebarPanel() {
+    stopWatchingSettings?.();
+    stopWatchingSettings = null;
     document.getElementById("chat-exporter-backdrop")?.remove();
     document.getElementById("chat-exporter-panel")?.remove();
   }
@@ -166,6 +168,13 @@
         <input type="checkbox" id="chat-exporter-images" />
         Download images (bundles as .zip)
       </label>
+      <label class="chat-exporter-checkbox">
+        <input type="checkbox" id="chat-exporter-tools" aria-describedby="chat-exporter-tools-hint" />
+        Include tool activity
+      </label>
+      <div class="chat-exporter-muted" id="chat-exporter-tools-hint">
+        Include tool commands and results. These can greatly increase the export size.
+      </div>
       <button class="chat-exporter-btn chat-exporter-btn-primary chat-exporter-btn-full" id="chat-exporter-copy">Copy Markdown</button>
       <div class="chat-exporter-actions">
         <button class="chat-exporter-btn chat-exporter-btn-primary" id="chat-exporter-save">Save to Downloads</button>
@@ -179,10 +188,17 @@
     panel.querySelector("#chat-exporter-selected").textContent = selectedTitle;
 
     const cb = panel.querySelector("#chat-exporter-images");
+    const toolsCb = panel.querySelector("#chat-exporter-tools");
     cb.checked = Boolean(settings.downloadImages);
-    cb.addEventListener("change", async () => {
+    toolsCb.checked = Boolean(settings.includeToolActivity);
+    const exportOptions = () => ({ downloadImages: cb.checked, includeToolActivity: toolsCb.checked });
+    stopWatchingSettings = globalThis.ChatExporterSettings.watch(chrome.storage.local, chrome.storage.onChanged, (updated) => {
+      cb.checked = updated.downloadImages;
+      toolsCb.checked = updated.includeToolActivity;
+    });
+    const saveOption = async (field, checkbox) => {
       try {
-        await saveSettings({ downloadImages: cb.checked });
+        await saveSettings({ [field]: checkbox.checked });
       } catch (error) {
         if (isExtensionContextInvalidated(error)) {
           setPanelStatus("Extension reloaded. Refresh this ChatGPT page.", "error");
@@ -190,7 +206,9 @@
         }
         setPanelStatus(`Failed: ${String(error?.message || error)}`, "error");
       }
-    });
+    };
+    cb.addEventListener("change", () => saveOption("downloadImages", cb));
+    toolsCb.addEventListener("change", () => saveOption("includeToolActivity", toolsCb));
 
     const copyBtn = panel.querySelector("#chat-exporter-copy");
     const saveBtn = panel.querySelector("#chat-exporter-save");
@@ -217,7 +235,8 @@
           const res = await chrome.runtime.sendMessage({
             type: "GET_MARKDOWN_BY_URL",
             url: selection.url,
-            title: selection.title
+            title: selection.title,
+            includeToolActivity: toolsCb.checked
           });
 
           if (!res?.ok) {
@@ -248,11 +267,11 @@
             url: selection.url,
             title: selection.title,
             saveAs,
-            downloadImages: cb.checked
+            ...exportOptions()
           });
 
           if (res?.ok) {
-            setPanelStatus(cb.checked ? "Downloaded (.zip)." : "Downloaded (.md).", "ok");
+            setPanelStatus(res.bundled === "zip" ? "Downloaded (.zip)." : "Downloaded (.md).", "ok");
           } else {
             setPanelStatus(`Failed: ${res?.error ?? "unknown error"}`, "error");
           }
