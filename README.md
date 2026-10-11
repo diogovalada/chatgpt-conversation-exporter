@@ -22,6 +22,22 @@ Use this option for development or to test a release before it is available in t
 
 Chrome Web Store publishing and release automation are documented in [PUBLISHING.md](./PUBLISHING.md). Ready-to-paste listing and reviewer text is in [STORE_LISTING.md](./STORE_LISTING.md).
 
+## Development Auto-Reload
+
+For local development, use Node.js 20 or newer and Chrome 120 or newer:
+
+```sh
+node scripts/dev-watch.mjs
+```
+
+The helper generates `dist/development/`. Load that directory once through **Load unpacked** in `chrome://extensions`. Disable the Store copy and any older unpacked copy in this profile to avoid duplicate menus; their settings are separate from this development copy.
+
+Keep the helper running while editing local extension files. It rebuilds the development copy and Chrome checks for changes approximately every 30 seconds, using an alarm to wake the extension's service worker and call `chrome.runtime.reload()`. Chrome may delay alarms, so this is not a guaranteed update deadline. Restarting the helper retains its local port/token and the same installation directory. Use `--port 8767` if the default port is busy; changing the port requires one manual extension reload so Chrome reads the new endpoint. Restart the helper after changing the watcher script itself.
+
+Chat pages are **not automatically refreshed**. Refresh them yourself when testing changed content scripts, after preserving any unsent drafts. Reloads can interrupt active exports; stop the watcher with Ctrl+C when you need an uninterrupted long-running test. The installed development copy remains usable while the helper is stopped.
+
+The authenticated helper listens only on `127.0.0.1`, does not synchronize GitHub, and never changes the production manifest. Syntax errors, missing manifest references and invalid static worker imports/exports leave the last good build installed. The complete generated worker graph is linked without executing extension code; runtime behavior still needs browser testing. Complete snapshots are staged before replacing the generated directory, with rollback on publication failure. Generated files/settings are ignored by Git. Development permissions and reload code are excluded from release ZIPs, and package validation rejects generated development builds.
+
 ## Supported Providers
 
 - ChatGPT on `chatgpt.com` and `chat.openai.com`
@@ -74,6 +90,10 @@ For the full regression checklist and a suggested "golden conversation" fixture,
 - If a provider lazily loads the contents of collapsed sections only after they are expanded, that hidden content will not be exported.
 - This is known to affect Claude saved HTML snapshots when tool or activity panels were still collapsed at save time, because the inner code/output content may be missing from the saved DOM entirely.
 - A future enhancement could expand supported collapsed sections automatically before export, extract their contents, and optionally restore the previous collapsed state afterwards.
+
+## Future Work
+
+See [FUTURE_WORK.md](./FUTURE_WORK.md) for proposed agent-friendly navigation of detailed exports: a bounded local reader, explicit message/tool identifiers and an optional companion index. These features are not implemented yet.
 
 ## Privacy
 

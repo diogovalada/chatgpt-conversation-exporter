@@ -49,6 +49,21 @@ if (!manifest.description || String(manifest.description).length > 132) {
 }
 
 const referencedFiles = new Map();
+
+if (manifest.background?.service_worker === "dev-service-worker.js" ||
+    (manifest.host_permissions || []).some((pattern) => /^http:\/\/(?:127\.0\.0\.1|localhost)(?:[:/]|$)/.test(pattern))) {
+  addError("Development reload builds must not be uploaded to the Chrome Web Store.");
+}
+
+for (const developmentFile of ["dev-service-worker.js", "dev-reload.mjs"]) {
+  try {
+    statSync(resolve(root, developmentFile));
+    addError(`Development-only file must not be packaged: ${developmentFile}`);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
 const reference = (file, source) => {
   if (!file) return;
   if (!referencedFiles.has(file)) referencedFiles.set(file, source);
