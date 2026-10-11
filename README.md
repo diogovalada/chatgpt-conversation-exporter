@@ -2,7 +2,13 @@
 
 Exports ChatGPT and Claude conversations to Markdown or a single zip bundle with local image assets.
 
-## Install from GitHub Releases (recommended)
+## Install from the Chrome Web Store (recommended)
+
+[Add AI Conversation Exporter to Chrome](https://chromewebstore.google.com/detail/kmamnooflknimknbicknlkopfbfdklpj).
+
+## Manual installation from GitHub Releases
+
+Use this option for development or to test a release before it is available in the store.
 
 1. Go to this repo's **Releases** page and download `chatgpt-conversation-exporter.zip`. Or download directly [here](https://github.com/diogovalada/chatgpt-conversation-exporter/releases/latest/download/chatgpt-conversation-exporter.zip).
 
