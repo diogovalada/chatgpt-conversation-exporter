@@ -43,6 +43,13 @@ The fixture conversation should include all of the following whenever the provid
 - Verify both Markdown image references and ZIP image assets
 - Include subagent activity and a context-compaction boundary/summary; preserve the earlier history
 - Repeat overlapping pages and echoed message IDs without duplicating messages
+- Match a `session_...` route to the corresponding `cse_...` metadata ID, but reject unrelated IDs
+- Reject event sequences that start after 1 or contain missing ranges, including gaps between pages
+- Do not count synthetic notifications as human prompts; retain them as collapsed session context
+- Exclude transport requests/successful responses, routine sandbox setup and unsent prompt suggestions; retain error responses, sandbox warnings/errors and unfamiliar events
+- Tool progress, hook/task updates and permission-check activity obey the tool-activity option
+- Failed hook outcomes and nonzero hook exits remain visible with tool activity disabled
+- Retain nested MCP failures even when their outer control response reports success
 - Interrupt/fail a later API page: report failure and do not save a partial transcript
 - Repeated cursors, malformed events and unfinished streamed messages must fail visibly
 - A multi-block stream must have a message stop, closed blocks and completed snapshots for every non-empty block, including across API pages

@@ -55,7 +55,7 @@ function setup({ pages, session = { session: { id, title: "Code test" } }, failP
   const last = event(4, "assistant", [text("Final answer: $x^2$.\n\n```js\nconst a = 1;\n```")]);
   const runtime = setup({
     organizations: [org, otherOrg], denyFirst: true,
-    session: { response_shape: { id, title: "Code test" } },
+    session: { response_shape: { id: id.replace(/^session_/, "cse_"), title: "Code test" } },
     pages: [
       { data: [first, call], next_cursor: "cursor+/one?" },
       { data: [call, output], next_cursor: "cursor two" },
@@ -137,6 +137,56 @@ function setup({ pages, session = { session: { id, title: "Code test" } }, failP
   assert.match(withoutTools, /Tool failed/);
   assert.doesNotMatch(withoutTools, /Private tool summary|Private task description|Private task progress|Private subagent summary/);
 
+  // Current web history includes automatic notifications and transport bookkeeping.
+  const notification = event(30, "user", "Automatic pull request notification", { isSynthetic: true });
+  const bookkeeping = [
+    { type: "env_manager_log", data: { level: "info", content: "Internal sandbox setup" } },
+    { type: "control_request", request: { subtype: "initialize" } },
+    { type: "control_response", response: { subtype: "success" } },
+    { type: "autocompact_state", value: { enabled: true } },
+    { type: "active_goal", value: null },
+    { type: "prompt_suggestion", suggestion: "Unsent proposed prompt" },
+    ...["init", "status", "turn_handoff_available"].map(subtype => ({ type: "system", subtype }))
+  ].map((payload, i) => ({ event_id: `runtime-${i}`, payload }));
+  const progress = ["task_updated", "background_tasks_changed", "permission_check_status",
+    "vcs_state_changed", "hook_started", "hook_response"]
+    .map(subtype => ({ event_id: subtype, payload: { type: "system", subtype, output: "Optional internal activity" } }));
+  progress.push({ event_id: "tool-progress", payload: { type: "tool_progress", text: "Optional tool progress" } });
+  const warning = { event_id: "warning", payload: { type: "env_manager_log", data: { level: "error", content: "Sandbox diagnostic" } } };
+  const unknown = { event_id: "future", payload: { type: "future_event", text: "New event must remain visible" } };
+  const diagnostics = [
+    { type: "control_response", response: { subtype: "error", request_id: "r", error: "MCP service unavailable" } },
+    { type: "control_response", response: { subtype: "future", text: "Unfamiliar control response" } },
+    { type: "control_response", response: { subtype: "success", request_id: "r", response: {
+      mcp_response: { jsonrpc: "2.0", id: 1, error: { code: -32603, message: "Nested MCP server unavailable" } }
+    } } },
+    { type: "control_response", response: { subtype: "success", request_id: "r", response: { error: "Inner control operation failed" } } },
+    { type: "system", subtype: "hook_response", hook_event: "SessionStart", outcome: "error", exit_code: 2, stderr: "Validation hook failed" },
+    { type: "system", subtype: "hook_response", hook_event: "Stop", outcome: "error", exit_code: 0, output: "Hook error with zero exit code" },
+    { type: "system", subtype: "hook_response", hook_event: "Stop", exit_code: 2, output: "Nonzero hook exit without outcome" }
+  ].map((payload, i) => ({ event_id: `diagnostic-${i}`, payload }));
+  const current = rich.ns.claudeCodeData.buildTurnDescriptors([
+    ...bookkeeping, first, call, notification, last, ...progress, warning, unknown, ...diagnostics
+  ]);
+  assert.deepEqual(Array.from(current, d => d.role), ["user", "assistant"]);
+  const conciseCurrent = current.map(d => rich.ns.claudeCodeData.renderTurnDescriptor(d, { includeToolActivity: false })).join("\n");
+  const detailedCurrent = current.map(d => rich.ns.claudeCodeData.renderTurnDescriptor(d, { includeToolActivity: true })).join("\n");
+  assert.match(conciseCurrent, /Session notification/);
+  assert.match(conciseCurrent, /Automatic pull request notification/);
+  assert.match(conciseCurrent, /Sandbox diagnostic/);
+  assert.match(conciseCurrent, /New event must remain visible/);
+  assert.doesNotMatch(conciseCurrent, /Optional internal activity|Optional tool progress/);
+  assert.match(detailedCurrent, /Optional internal activity/);
+  assert.match(detailedCurrent, /Optional tool progress/);
+  assert.doesNotMatch(detailedCurrent, /Internal sandbox setup|Unsent proposed prompt|control_request|autocompact_state|turn_handoff_available/);
+  assert.equal((detailedCurrent.match(/"subtype": "success"/g) || []).length, 2, "only error-bearing success envelopes remain");
+  for (const exported of [conciseCurrent, detailedCurrent]) {
+    for (const diagnostic of ["MCP service unavailable", "Unfamiliar control response", "Validation hook failed",
+      "Nested MCP server unavailable", "Inner control operation failed", "Hook error with zero exit code", "Nonzero hook exit without outcome"]) {
+      assert.ok(exported.includes(diagnostic), diagnostic);
+    }
+  }
+
   const light = setup({ pages: [{ data: [first, call, output, last] }] });
   const defaultResult = await light.ns.extractConversation({ downloadImages: true });
   assert.doesNotMatch(defaultResult.markdown, /Claude Activity|Claude Tool Result|command output|printf/);
@@ -191,6 +241,9 @@ function setup({ pages, session = { session: { id, title: "Code test" } }, failP
   await fails({ pages: [{ data: [first, { ...last, sequence_num: 1 }] }] }, /ordering could not be verified/);
   await fails({ pages: [{ data: [] }] }, /No messages/);
   await fails({ session: { session: { id: "session_Wrong" } } }, /unexpected session/);
+  await fails({ session: { response_shape: { id: "cse_Wrong" } } }, /unexpected session/);
+  await fails({ pages: [{ data: [last] }] }, /missing its beginning/);
+  await fails({ pages: [{ data: [first], next_cursor: "gap" }, { data: [last] }] }, /sequence gap/);
   await fails({ pages: (n) => ({ data: [event(n + 1, "user", "prompt")], next_cursor: `cursor-${n}` }) }, /safety limit/);
 
   // A long, entirely off-screen history is exported from all pages.

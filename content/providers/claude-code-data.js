@@ -32,7 +32,10 @@
         });
         // Both response envelopes are used by the Claude Code web frontend.
         session = response?.session || response?.response_shape;
-        if (session?.id !== id) throw incomplete("the API returned an unexpected session.");
+        // The web route uses session_, while current metadata uses cse_ for the same suffix.
+        if (session?.id !== id && session?.id !== id.replace(/^session_/, "cse_")) {
+          throw incomplete("the API returned an unexpected session.");
+        }
         organizationId = candidate;
         break;
       } catch (error) {
@@ -82,6 +85,9 @@
             sequences.add(sequence);
           }
           events.sort((a, b) => Number(a.sequence_num) - Number(b.sequence_num));
+          if (events.some((event, index) => Number(event.sequence_num) !== index + 1)) {
+            throw incomplete("the event history was missing its beginning or had a sequence gap.");
+          }
         }
         return { session, events };
       }
@@ -189,8 +195,9 @@
           message.toolActivity = true;
           message.section = `Subagent ${type === "user" ? "input/output" : "response"} (${payload.parent_tool_use_id})`;
           appendAssistant(message);
-        } else if (payload.isMeta || payload.isCompactSummary) {
-          message.section = payload.isCompactSummary ? "Context summary" : "Session context";
+        } else if (payload.isMeta || payload.isCompactSummary || payload.isSynthetic) {
+          message.section = payload.isCompactSummary ? "Context summary" :
+            payload.isSynthetic ? "Session notification" : "Session context";
           appendAssistant(message);
         } else if (type === "assistant" || (content.length && content.every((block) => block.type === "tool_result"))) {
           appendAssistant(message);
@@ -202,15 +209,24 @@
       }
 
       // These are transport/runtime metadata, not transcript messages.
-      if (type === "rate_limit_event" || type === "keep_alive" ||
-          (type === "system" && payload.subtype === "init")) continue;
+      const controlError = payload.response?.error || payload.response?.response?.error ||
+        payload.response?.response?.mcp_response?.error;
+      if (["rate_limit_event", "keep_alive", "control_request",
+        "autocompact_state", "prompt_suggestion"].includes(type) ||
+          (type === "control_response" && payload.response?.subtype === "success" && !controlError) ||
+          (type === "active_goal" && payload.value == null) ||
+          (type === "env_manager_log" && !["error", "warn", "warning"].includes(payload.data?.level)) ||
+          (type === "system" && ["init", "status", "turn_handoff_available"].includes(payload.subtype))) continue;
       if (type === "result" && !payload.is_error) continue;
 
+      const failedHook = type === "system" && payload.subtype === "hook_response" &&
+        (payload.outcome === "error" || (payload.exit_code != null && payload.exit_code !== 0));
       // Keep unfamiliar events visible instead of silently discarding new content types.
       appendAssistant({
         uuid: event.event_id,
-        toolActivity: type === "tool_use_summary" || (type === "system" &&
-          ["task_started", "task_progress", "task_notification"].includes(payload.subtype)),
+        toolActivity: !failedHook && (["tool_use_summary", "tool_progress"].includes(type) || (type === "system" &&
+          ["task_started", "task_progress", "task_notification", "task_updated", "background_tasks_changed",
+            "permission_check_status", "vcs_state_changed", "hook_started", "hook_response"].includes(payload.subtype))),
         section: `Claude Code ${type || "event"}${payload.subtype ? `: ${payload.subtype}` : ""}`,
         content: [{ type: "code_event", data: payload }]
       });
